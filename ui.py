@@ -30,11 +30,11 @@ def require_login(allowed_roles: set[str] | None = None) -> User:
 
 
 def show_user_sidebar(user: User) -> None:
-    left, right = st.columns([3, 1])
-    left.caption(f"Signed in as {user.username} ({user.role})")
-    if right.button("Switch user", key=f"switch_user_{user.id}", width="stretch"):
+    action_col, user_col = st.columns([1, 5])
+    if action_col.button("Switch user", key=f"switch_user_{user.id}", width="stretch"):
         st.session_state.clear()
         st.switch_page("app.py")
+    user_col.caption(f"Signed in as {user.username} ({user.role})")
 
 
 def show_table(df, empty_message: str) -> None:

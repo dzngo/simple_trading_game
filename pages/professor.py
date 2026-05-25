@@ -25,9 +25,8 @@ from ui import (
 
 st.set_page_config(page_title="Professor", page_icon="mortar_board", layout="wide")
 
-user = require_login({"Professor"})
-show_user_sidebar(user)
 inject_app_styles()
+user = require_login({"Professor"})
 
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
@@ -95,6 +94,7 @@ st.markdown(
     '<div class="role-strip">Control Market Prices, monitor failed negotiations, and keep the live trading session moving.</div>',
     unsafe_allow_html=True,
 )
+show_user_sidebar(user)
 
 with st.expander("Reset game state"):
     st.warning("This clears all orders and trades and restores demo users, products, and market prices.")

@@ -17,9 +17,8 @@ from ui import (
 
 st.set_page_config(page_title="Company", page_icon="office", layout="wide")
 
-user = require_login({"Company"})
-show_user_sidebar(user)
 inject_app_styles()
+user = require_login({"Company"})
 
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
@@ -62,6 +61,7 @@ st.markdown(
     '<div class="role-strip">Submit negotiated trade declarations with banks and watch whether the bank confirms or refuses the same terms.</div>',
     unsafe_allow_html=True,
 )
+show_user_sidebar(user)
 
 with get_session() as session:
     product_options = products(session)

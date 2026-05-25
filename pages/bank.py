@@ -24,9 +24,8 @@ from ui import (
 
 st.set_page_config(page_title="Bank", page_icon="bank", layout="wide")
 
-user = require_login({"Bank"})
-show_user_sidebar(user)
 inject_app_styles()
+user = require_login({"Bank"})
 
 
 def get_market_price(product_id: int) -> float:
@@ -82,6 +81,7 @@ st.markdown(
     '<div class="role-strip">Quote companies using the professor-set Market Price, then confirm trades through matching declarations.</div>',
     unsafe_allow_html=True,
 )
+show_user_sidebar(user)
 
 with get_session() as session:
     product_options = products(session)
