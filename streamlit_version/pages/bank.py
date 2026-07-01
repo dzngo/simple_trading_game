@@ -136,7 +136,7 @@ with left:
             if submitted:
                 submitted_price = float(st.session_state["bank_agreed_price"])
                 with get_session() as session:
-                    order, trade = create_trade_declaration(
+                    create_trade_declaration(
                         session=session,
                         user_id=user.id,
                         counterparty_id=counterparty.id,
@@ -144,15 +144,6 @@ with left:
                         side=side,
                         price=submitted_price,
                     )
-                if trade is None:
-                    if order.status == "Refused":
-                        st.error(f"Order #{order.id} was refused because the company declaration did not match.")
-                    else:
-                        st.info(
-                            f"Order #{order.id} is pending until {counterparty.username} enters the compatible side."
-                        )
-                else:
-                    st.success(f"Order #{order.id} matched and trade #{trade.id} was recorded.")
                 st.rerun()
 
     with st.container(border=True):

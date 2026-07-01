@@ -147,38 +147,27 @@ def render_trade_status_panel(orders, user_id: int) -> None:
     if previous_statuses is None:
         st.session_state[state_key] = current_statuses
     else:
-        resolved_statuses = {"Matched", "Refused"}
+        notification_statuses = {"Pending", "Matched", "Refused"}
         for order_id, status in current_statuses.items():
-            if status in resolved_statuses and previous_statuses.get(order_id) != status:
+            if status in notification_statuses and previous_statuses.get(order_id) != status:
                 matching_row = orders.loc[orders["ID"] == order_id].iloc[0]
-                if status == "Matched":
-                    st.toast(f"Trade confirmed: {matching_row['Option']} with {matching_row['Counterparty']}.")
+                if status == "Pending":
+                    st.toast(
+                        f"Trade pending: {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        icon=":material/hourglass_top:",
+                    )
+                elif status == "Matched":
+                    st.toast(
+                        f"Trade confirmed: {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        icon=":material/check_circle:",
+                    )
                 else:
                     reason = matching_row.get("Refusal Reason") or "Terms did not match"
                     st.toast(
-                        f"Trade refused ({reason}): {matching_row['Option']} with {matching_row['Counterparty']}."
+                        f"Trade refused ({reason}): {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        icon=":material/error:",
                     )
         st.session_state[state_key] = current_statuses
-
-    pending = orders[orders["Status"] == "Pending"]
-    if not pending.empty:
-        latest_pending = pending.sort_values("Created", ascending=False).iloc[0]
-        st.info(
-            f"Awaiting response from {latest_pending['Counterparty']}: "
-            f"{latest_pending['Option']} at {latest_pending['Price']:.1f}."
-        )
-    else:
-        resolved = orders[orders["Status"].isin(["Matched", "Refused"])]
-        if not resolved.empty:
-            latest = resolved.sort_values("Created", ascending=False).iloc[0]
-            detail = f"{latest['Option']} with {latest['Counterparty']} at {latest['Price']:.1f}."
-            if latest["Status"] == "Matched":
-                st.success(f"Trade confirmed: {detail}")
-            else:
-                reason = latest.get("Refusal Reason") or "Terms did not match"
-                st.error(
-                    f"Trade refused: {reason}. Renegotiate verbally and submit new declarations. {detail}"
-                )
 
     counts = orders["Status"].value_counts().to_dict()
     status_chips(counts)
