@@ -40,6 +40,7 @@ class Order(Base):
     side: Mapped[str] = mapped_column(String(10), nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="Pending")
+    paired_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     user: Mapped[User] = relationship(foreign_keys=[user_id])

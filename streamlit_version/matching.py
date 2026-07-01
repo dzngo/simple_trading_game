@@ -77,7 +77,10 @@ def create_trade_declaration(
 
     if reciprocal_orders:
         order.status = "Refused"
-        reciprocal_orders[0].status = "Refused"
+        refused_peer = reciprocal_orders[0]
+        refused_peer.status = "Refused"
+        order.paired_order_id = refused_peer.id
+        refused_peer.paired_order_id = order.id
         session.flush()
 
     return order, None

@@ -53,9 +53,7 @@ def ensure_market_rows(session, option: Option, bid_price: float = 9.0, ask_pric
 
 def active_options_for_setup(session) -> list[Option]:
     return list(
-        session.scalars(
-            select(Option).where(Option.is_active.is_(True)).order_by(Option.display_order, Option.id)
-        )
+        session.scalars(select(Option).where(Option.is_active.is_(True)).order_by(Option.display_order, Option.id))
     )
 
 
@@ -68,9 +66,7 @@ def set_active_option_count(session, target_count: int) -> None:
         return
 
     inactive_options = list(
-        session.scalars(
-            select(Option).where(Option.is_active.is_(False)).order_by(Option.display_order, Option.id)
-        )
+        session.scalars(select(Option).where(Option.is_active.is_(False)).order_by(Option.display_order, Option.id))
     )
     while len(active_options) < target_count:
         display_order = len(active_options) + 1
@@ -223,67 +219,178 @@ def publish_market_prices() -> tuple[bool, str]:
     return True, "Market prices adjusted."
 
 
+def refusal_reason_for_pair(first, second) -> str:
+    price_mismatch = normalize_price(first["Price"]) != normalize_price(second["Price"])
+    side_mismatch = first["Side"] == second["Side"]
+    if price_mismatch and side_mismatch:
+        return "Price and side mismatch"
+    if price_mismatch:
+        return "Price mismatch"
+    if side_mismatch:
+        return "Side mismatch"
+    return "Terms did not match"
+
+
+def stable_participants_label(rows) -> str:
+    names = {row["Submitted By"] for row in rows} | {row["Counterparty"] for row in rows}
+    companies = sorted(name for name in names if str(name).startswith("Company"))
+    banks = sorted(name for name in names if str(name).startswith("Bank"))
+    if companies and banks:
+        return f"{companies[0]} ↔ {banks[0]}"
+    return " ↔ ".join(sorted(names))
+
+
+def refusal_cases(refused_orders: pd.DataFrame) -> list[dict]:
+    if refused_orders.empty:
+        return []
+
+    ordered = refused_orders.sort_values("Created", ascending=True).reset_index(drop=True)
+    used_indexes = set()
+    cases = []
+
+    for index, row in ordered.iterrows():
+        if index in used_indexes:
+            continue
+
+        pair_index = None
+        if "Paired Order ID" in ordered.columns and not pd.isna(row["Paired Order ID"]):
+            paired_rows = ordered.index[ordered["ID"] == row["Paired Order ID"]].tolist()
+            pair_index = paired_rows[0] if paired_rows else None
+
+        if pair_index is None:
+            for candidate_index, candidate in ordered.iterrows():
+                if candidate_index == index or candidate_index in used_indexes:
+                    continue
+                if (
+                    row["Submitted By"] == candidate["Counterparty"]
+                    and row["Counterparty"] == candidate["Submitted By"]
+                    and row["Option"] == candidate["Option"]
+                ):
+                    pair_index = candidate_index
+                    break
+
+        used_indexes.add(index)
+        rows = [row]
+        reason = row.get("Refusal Reason", "Terms did not match")
+        if pair_index is not None:
+            used_indexes.add(pair_index)
+            paired_row = ordered.loc[pair_index]
+            rows.append(paired_row)
+            reason = refusal_reason_for_pair(row, paired_row)
+
+        cases.append(
+            {
+                "participants": stable_participants_label(rows),
+                "option": row["Option"],
+                "reason": reason,
+                "rows": rows,
+            }
+        )
+
+    return list(reversed(cases))
+
+
+def render_refusal_cases(refused_orders: pd.DataFrame) -> None:
+    cases = refusal_cases(refused_orders)
+    if not cases:
+        st.caption("No refused declarations.")
+        return
+
+    rows = []
+    for case_number, case in enumerate(cases, start=1):
+        company_row = None
+        bank_row = None
+        for row in case["rows"]:
+            if str(row["Submitted By"]).startswith("Company"):
+                company_row = row
+            elif str(row["Submitted By"]).startswith("Bank"):
+                bank_row = row
+
+        first_row = case["rows"][0]
+        second_row = case["rows"][1] if len(case["rows"]) > 1 else None
+        company_row = company_row if company_row is not None else first_row
+        bank_row = bank_row if bank_row is not None and bank_row is not company_row else second_row
+
+        company_declaration = (
+            f"{company_row['Side']} · € {company_row['Price']:.1f}" if company_row is not None else "Missing"
+        )
+        bank_declaration = f"{bank_row['Side']} · € {bank_row['Price']:.1f}" if bank_row is not None else "Missing"
+        times = [row["Created"].strftime("%H:%M:%S") for row in case["rows"]]
+
+        rows.append(
+            {
+                "Participants": case["participants"],
+                "Option": case["option"],
+                "Issue": case["reason"],
+                "Company declaration": company_declaration,
+                "Bank declaration": bank_declaration,
+                "Submitted": " / ".join(times),
+            }
+        )
+
+    show_table(pd.DataFrame(rows), "No refused declarations.", hide_id=False)
+
+
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
-def render_professor_live_panel() -> None:
+def render_trade_history() -> None:
     with get_session() as session:
         all_orders = infer_refusal_reasons(orders_df(session))
         pending_orders = orders_df(session, status="Pending")
         refused_orders = infer_refusal_reasons(orders_df(session, status="Refused"))
         client_bank_trades = trades_df(session, source="Client-Bank")
         market_trades = trades_df(session, source="Market")
+
+    auto_refresh_caption()
+    with st.container(border=True):
+        st.subheader("Trades")
+        status_chips(
+            {
+                "Pending": len(pending_orders),
+                "Matched": int((all_orders["Status"] == "Matched").sum()) if not all_orders.empty else 0,
+                "Refused": len(refused_orders),
+            }
+        )
+
+        client_bank_tab, refused_tab, market_tab, all_tab = st.tabs(
+            ["Company-Bank trades", "Refused transactions", "Market trades", "All transactions"]
+        )
+        with client_bank_tab:
+            show_table(client_bank_trades, "No client-bank trades matched yet.")
+        with refused_tab:
+            render_refusal_cases(refused_orders)
+        with market_tab:
+            show_table(market_trades, "No market transactions yet.")
+        with all_tab:
+            show_table(all_orders, "No orders submitted yet.")
+
+
+@st.fragment(run_every=AUTO_REFRESH_INTERVAL)
+def render_professor_analytics() -> None:
+    with get_session() as session:
         pnl = pnl_df(session)
         pnl_history = cumulative_pnl_history_df(session)
 
-    auto_refresh_caption()
-    status_chips(
-        {
-            "Pending": len(pending_orders),
-            "Matched": int((all_orders["Status"] == "Matched").sum()) if not all_orders.empty else 0,
-            "Refused": len(refused_orders),
-        }
-    )
-
-    metric_cols = st.columns(5)
-    metric_cols[0].metric("Orders", len(all_orders))
-    metric_cols[1].metric("Pending", len(pending_orders))
-    metric_cols[2].metric("Refused", len(refused_orders))
-    metric_cols[3].metric("Client-Bank Trades", len(client_bank_trades))
-    metric_cols[4].metric("Market Trades", len(market_trades))
-
-    refused_tab, client_bank_tab, market_tab, all_tab = st.tabs(
-        ["Refused", "Client-Bank Trades", "Market Transactions", "All Declarations"]
-    )
-    with refused_tab:
-        show_table(refused_orders, "No refused declarations.")
-    with client_bank_tab:
-        show_table(client_bank_trades, "No client-bank trades matched yet.")
-    with market_tab:
-        show_table(market_trades, "No market transactions yet.")
-    with all_tab:
-        show_table(all_orders, "No orders submitted yet.")
-
-    st.divider()
-    st.subheader("Analytics")
-
-    if pnl_history.empty:
-        st.info("No trades yet. P/L chart will appear after the first trade.")
-    else:
-        fig = px.line(
-            pnl_history,
-            x="Trade ID",
-            y="Cumulative P/L",
-            color="Participant",
-            markers=True,
-            title="Cumulative Profit / Loss",
-        )
-        st.plotly_chart(fig, width="stretch")
-    show_table(pnl, "No participants found.")
+    with st.container(border=True):
+        st.subheader("Analytics")
+        if pnl_history.empty:
+            st.info("No trades yet. P/L chart will appear after the first trade.")
+        else:
+            fig = px.line(
+                pnl_history,
+                x="Trade ID",
+                y="Cumulative P/L",
+                color="Participant",
+                markers=True,
+            )
+            fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=360)
+            st.plotly_chart(fig, width="stretch")
+        show_table(pnl, "No participants found.")
 
 
 def render_option_setup() -> None:
     with st.container(border=True):
         header_col, status_col = st.columns([3, 2], vertical_alignment="center")
-        header_col.subheader("Option setup and market prices")
+        header_col.subheader("Options and market prices")
 
         with get_session() as session:
             definitions_locked = trading_started(session)
@@ -308,7 +415,7 @@ def render_option_setup() -> None:
         )
         catalog_count_changed = int(requested_count) != current_count
         if definitions_locked:
-            note_col.caption("Option definitions and count are locked after the first declaration.")
+            note_col.caption("Definitions and count are locked after the first declaration.")
         elif catalog_count_changed:
             note_col.warning(
                 f"Catalog update staged: desks still see {current_count} active option(s).",
@@ -368,32 +475,30 @@ def render_option_setup() -> None:
                 st.toast("Option catalog updated.")
                 st.rerun()
 
-        action_col, status_col = st.columns([1, 3], vertical_alignment="center")
-        if action_col.button(
-            "Adjust market prices",
-            type="primary",
-            icon=":material/publish:",
-            disabled=bool(errors) or catalog_count_changed,
-            width="stretch",
-        ):
-            success, message = publish_market_prices()
-            if success:
-                st.success(message, icon=":material/check_circle:")
-                st.rerun()
-            else:
-                st.error(message, icon=":material/error:")
-
         if errors:
-            status_col.caption("Fix the highlighted setup problem before publishing market prices.")
+            st.caption("Fix the highlighted setup problem before publishing market prices.")
         elif catalog_count_changed:
-            status_col.caption("Update the option catalog before publishing market price changes.")
+            st.caption("Update the option catalog before publishing market price changes.")
         elif pending_changes:
+            action_col, status_col = st.columns([1, 3], vertical_alignment="center")
+            if action_col.button(
+                "Adjust market prices",
+                type="primary",
+                icon=":material/publish:",
+                width="stretch",
+            ):
+                success, message = publish_market_prices()
+                if success:
+                    st.success(message, icon=":material/check_circle:")
+                    st.rerun()
+                else:
+                    st.error(message, icon=":material/error:")
             status_col.warning(
                 f"{pending_changes} option price row(s) staged. Banks still see the published bid/ask.",
                 icon=":material/pending:",
             )
         else:
-            status_col.success("Published prices are up to date.", icon=":material/check_circle:")
+            st.caption(":green[:material/check_circle: Published prices are up to date.]")
 
 
 def render_group_payoff_summary() -> None:
@@ -425,7 +530,7 @@ def render_group_payoff_summary() -> None:
             "Price": trade.price,
             "Buyer": trade.buyer.username,
             "Seller": trade.seller.username,
-            "Created": trade.created_at,
+            "Created": trade.created_at.strftime("%H:%M:%S"),
         }
         for trade in underlying_trades
     ]
@@ -441,8 +546,8 @@ def render_group_payoff_summary() -> None:
 
     paid, received = selected_trade_totals(selected_trades, selected_user.id)
     total_cols = st.columns(2)
-    total_cols[0].metric("Prices Paid", f"{paid:.1f}")
-    total_cols[1].metric("Prices Received", f"{received:.1f}")
+    total_cols[0].metric("Paid", f"{paid:.1f}")
+    total_cols[1].metric("Received", f"{received:.1f}")
 
     curve = payoff_curve_df(selected_trades, selected_user.id)
     if curve.empty:
@@ -452,12 +557,12 @@ def render_group_payoff_summary() -> None:
             curve,
             x="x",
             y="Payoff",
-            title=f"Selected Position Payoff - {selected_user.username} / {selected_underlying}",
         )
+        fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=320)
         st.plotly_chart(fig, width="stretch")
 
 
-st.title("Professor Control Room")
+st.title("Professor control room")
 st.markdown(
     '<div class="role-strip">Configure options, publish market prices, monitor declarations, and review group outcomes.</div>',
     unsafe_allow_html=True,
@@ -473,11 +578,16 @@ with st.expander("Reset game state"):
         st.success("Game state reset.")
         st.rerun()
 
-render_option_setup()
+top_left, top_right = st.columns(2)
+with top_left:
+    render_option_setup()
+with top_right:
+    render_trade_history()
 
-st.divider()
-st.subheader("Group Payoff Summary")
-render_group_payoff_summary()
-
-st.divider()
-render_professor_live_panel()
+bottom_left, bottom_right = st.columns(2)
+with bottom_left:
+    with st.container(border=True):
+        st.subheader("Group payoff")
+        render_group_payoff_summary()
+with bottom_right:
+    render_professor_analytics()

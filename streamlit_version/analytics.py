@@ -35,7 +35,7 @@ def options_df(session: Session, include_market: bool = False) -> pd.DataFrame:
     rows = []
     for option in options:
         row = {
-            "Option": option_label(option),
+            "ID": option.id,
             "Type": option.option_type,
             "Underlying": option.underlying_asset,
             "Strike": option.strike_price,
@@ -105,6 +105,7 @@ def orders_df(session: Session, user_id: int | None = None, status: str | None =
         statement = statement.where(Order.status == status)
 
     rows = session.scalars(statement).all()
+    refusal_reasons = refusal_reasons_for_orders(session, rows) if user_id is not None else {}
     return pd.DataFrame(
         [
             {
@@ -118,11 +119,46 @@ def orders_df(session: Session, user_id: int | None = None, status: str | None =
                 "Side": order.side,
                 "Price": order.price,
                 "Status": order.status,
+                "Paired Order ID": order.paired_order_id,
+                "Refusal Reason": refusal_reasons.get(order.id, ""),
                 "Created": order.created_at,
             }
             for order in rows
         ]
     )
+
+
+def refusal_reasons_for_orders(session: Session, orders: list[Order]) -> dict[int, str]:
+    reasons = {}
+    refused_orders = [order for order in orders if order.status == "Refused"]
+    for order in refused_orders:
+        peer = session.get(Order, order.paired_order_id) if order.paired_order_id is not None else None
+        if peer is None:
+            peer = session.scalar(
+                select(Order)
+                .where(
+                    Order.status == "Refused",
+                    Order.option_id == order.option_id,
+                    Order.user_id == order.counterparty_id,
+                    Order.counterparty_id == order.user_id,
+                )
+                .order_by(Order.created_at.desc())
+            )
+        if peer is None:
+            reasons[order.id] = "Terms did not match"
+            continue
+
+        price_mismatch = round(float(order.price), 1) != round(float(peer.price), 1)
+        side_mismatch = order.side == peer.side
+        if price_mismatch and side_mismatch:
+            reasons[order.id] = "Price and side mismatch"
+        elif price_mismatch:
+            reasons[order.id] = "Price mismatch"
+        elif side_mismatch:
+            reasons[order.id] = "Side mismatch"
+        else:
+            reasons[order.id] = "Terms did not match"
+    return reasons
 
 
 def trades_df(

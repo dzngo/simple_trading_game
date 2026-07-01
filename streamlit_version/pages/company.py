@@ -5,10 +5,12 @@ from db import get_session
 from matching import create_trade_declaration
 from ui import (
     AUTO_REFRESH_INTERVAL,
-    attention_queue_df,
     auto_refresh_caption,
     infer_refusal_reasons,
     inject_app_styles,
+    matched_trades_df,
+    pending_trades_df,
+    refused_transactions_df,
     render_trade_status_panel,
     require_login,
     show_table,
@@ -30,8 +32,10 @@ def render_company_live_panel(user_id: int) -> None:
         visible_options = options_df(session, include_market=False)
         orders = orders_df(session, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
-        attention = attention_queue_df(orders_with_reasons)
+        pending = pending_trades_df(orders_with_reasons)
+        refused = refused_transactions_df(orders_with_reasons)
         trades = trades_df(session, user_id=user_id, source="Client-Bank")
+        matched = matched_trades_df(trades, user.username)
 
     auto_refresh_caption()
     render_trade_status_panel(orders, user_id)
@@ -39,16 +43,16 @@ def render_company_live_panel(user_id: int) -> None:
     st.caption(f"{len(option_options)} active options | {len(bank_options)} available banks")
 
     st.subheader("Available options")
-    show_table(visible_options, "No active options configured.")
+    show_table(visible_options, "No active options configured.", hide_id=False)
 
-    st.subheader("Needs attention")
-    show_table(attention, "No pending or refused declarations.")
+    st.subheader("Pending trades")
+    show_table(pending, "No pending trades.")
 
-    st.subheader("Confirmed trades")
-    show_table(trades, "No matched trades yet.")
+    st.subheader("Matched trades")
+    show_table(matched, "No matched trades yet.")
 
-    with st.expander("Declaration log"):
-        show_table(orders_with_reasons, "No trade declarations yet.")
+    with st.expander("Refused transactions"):
+        show_table(refused, "No refused transactions.")
 
 
 st.title("Company desk")

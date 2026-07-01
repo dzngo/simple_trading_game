@@ -20,6 +20,12 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        order_columns = {
+            row[1] for row in connection.execute(text("PRAGMA table_info(orders)")).fetchall()
+        }
+        if "paired_order_id" not in order_columns:
+            connection.execute(text("ALTER TABLE orders ADD COLUMN paired_order_id INTEGER"))
 
 
 def reset_db() -> None:

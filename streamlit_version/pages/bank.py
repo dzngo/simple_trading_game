@@ -13,10 +13,12 @@ from db import get_session
 from matching import create_market_trade, create_trade_declaration
 from ui import (
     AUTO_REFRESH_INTERVAL,
-    attention_queue_df,
     auto_refresh_caption,
     infer_refusal_reasons,
     inject_app_styles,
+    matched_trades_df,
+    pending_trades_df,
+    refused_transactions_df,
     render_trade_status_panel,
     require_login,
     show_table,
@@ -35,6 +37,12 @@ def get_market_prices(option_id: int) -> tuple[float, float]:
         return market_price_for_option(session, option_id)
 
 
+def format_market_trade_confirmation(trade_id: int, option_text: str, side: str, price: float, created_at) -> str:
+    direction = "from Market" if side == "Buy" else "to Market"
+    executed_at = created_at.strftime("%H:%M:%S")
+    return f"Trade #{trade_id}: {side} {option_text} {direction} at € {price:.1f} at {executed_at}."
+
+
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_bank_live_panel(user_id: int) -> None:
     with get_session() as session:
@@ -43,8 +51,12 @@ def render_bank_live_panel(user_id: int) -> None:
         market_prices = market_prices_df(session)
         orders = orders_df(session, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
-        attention = attention_queue_df(orders_with_reasons)
+        pending = pending_trades_df(orders_with_reasons)
+        refused = refused_transactions_df(orders_with_reasons)
         trades = trades_df(session, user_id=user_id, source="Client-Bank")
+        matched = matched_trades_df(trades, user.username)
+        market_trades = trades_df(session, user_id=user_id, source="Market")
+        market_history = matched_trades_df(market_trades, user.username)
 
     auto_refresh_caption()
     render_trade_status_panel(orders, user_id)
@@ -54,14 +66,17 @@ def render_bank_live_panel(user_id: int) -> None:
     st.subheader("Market prices")
     show_table(market_prices, "No market prices configured.")
 
-    st.subheader("Needs attention")
-    show_table(attention, "No pending or refused declarations.")
+    st.subheader("Pending trades")
+    show_table(pending, "No pending trades.")
 
-    st.subheader("Confirmed trades")
-    show_table(trades, "No matched trades yet.")
+    st.subheader("Matched trades")
+    show_table(matched, "No matched trades yet.")
 
-    with st.expander("Declaration log"):
-        show_table(orders_with_reasons, "No trade declarations yet.")
+    with st.expander("Market trades history"):
+        show_table(market_history, "No market trades yet.")
+
+    with st.expander("Refused transactions"):
+        show_table(refused, "No refused transactions.")
 
 
 st.title("Bank desk")
@@ -143,6 +158,9 @@ with left:
     with st.container(border=True):
         st.subheader("Market trade")
         st.caption("Market trades execute immediately at the published professor-set bid/ask.")
+        market_confirmation = st.session_state.pop("market_trade_confirmation", None)
+        if market_confirmation is not None:
+            st.success(market_confirmation, icon=":material/check_circle:")
 
         if not option_options:
             st.info("No active options configured.")
@@ -162,7 +180,13 @@ with left:
                         option_id=market_option.id,
                         side=market_side,
                     )
-                st.success(f"Market trade #{trade.id} executed at {trade.price:.1f}.")
+                    st.session_state["market_trade_confirmation"] = format_market_trade_confirmation(
+                        trade.id,
+                        option_label(trade.option),
+                        market_side,
+                        trade.price,
+                        trade.created_at,
+                    )
                 st.rerun()
 
 with right:

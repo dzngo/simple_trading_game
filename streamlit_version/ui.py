@@ -37,13 +37,14 @@ def show_user_sidebar(user: User) -> None:
     user_col.caption(f"Signed in as {user.username} ({user.role})")
 
 
-def show_table(df, empty_message: str) -> None:
+def show_table(df, empty_message: str, hide_id: bool = True) -> None:
     if df.empty:
         st.caption(empty_message)
         return
 
     column_config = {
-        "ID": None,
+        "ID": None if hide_id else st.column_config.NumberColumn("ID", format="%d"),
+        "Paired Order ID": None,
         "Source": None,
         "Price": st.column_config.NumberColumn("Price", format="€ %.1f"),
         "Bid": st.column_config.NumberColumn("Bid", format="€ %.1f"),
@@ -52,6 +53,7 @@ def show_table(df, empty_message: str) -> None:
         "Draft Ask": st.column_config.NumberColumn("Draft ask", format="€ %.1f"),
         "Strike": st.column_config.NumberColumn("Strike", format="%d"),
         "Created": st.column_config.DatetimeColumn("Created", format="HH:mm:ss"),
+        "Submitted at": st.column_config.DatetimeColumn("Submitted at", format="HH:mm:ss"),
         "Updated": st.column_config.DatetimeColumn("Updated", format="HH:mm:ss"),
     }
     st.dataframe(df, hide_index=True, width="stretch", column_config=column_config)
@@ -75,14 +77,23 @@ def inject_app_styles() -> None:
             display: none;
         }
         .block-container {
-            padding-top: 2rem;
+            padding-top: 1.4rem;
             padding-bottom: 3rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] h3 {
+            font-size: 1.2rem;
+            line-height: 1.25;
+            margin-bottom: 0.45rem;
+        }
+        div[data-testid="stAlert"] {
+            padding: 0.45rem 0.65rem;
+            margin-bottom: 0.35rem;
         }
         div[data-testid="stMetric"] {
             background: #ffffff;
             border: 1px solid #e2e5e9;
             border-radius: 8px;
-            padding: 0.85rem 1rem;
+            padding: 0.55rem 0.7rem;
         }
         .status-row {
             display: flex;
@@ -128,6 +139,8 @@ def render_trade_status_panel(orders, user_id: int) -> None:
         st.caption("No trade declarations submitted yet.")
         return
 
+    orders = infer_refusal_reasons(orders)
+
     current_statuses = {int(row["ID"]): row["Status"] for _, row in orders.iterrows()}
     state_key = f"known_trade_statuses_{user_id}"
     previous_statuses = st.session_state.get(state_key)
@@ -141,21 +154,11 @@ def render_trade_status_panel(orders, user_id: int) -> None:
                 if status == "Matched":
                     st.toast(f"Trade confirmed: {matching_row['Option']} with {matching_row['Counterparty']}.")
                 else:
+                    reason = matching_row.get("Refusal Reason") or "Terms did not match"
                     st.toast(
-                        f"Trade refused: {matching_row['Option']} with {matching_row['Counterparty']}."
+                        f"Trade refused ({reason}): {matching_row['Option']} with {matching_row['Counterparty']}."
                     )
         st.session_state[state_key] = current_statuses
-
-    resolved = orders[orders["Status"].isin(["Matched", "Refused"])]
-    if not resolved.empty:
-        latest = resolved.sort_values("Created", ascending=False).iloc[0]
-        detail = f"{latest['Option']} with {latest['Counterparty']} at {latest['Price']:.1f}."
-        if latest["Status"] == "Matched":
-            st.success(f"Trade confirmed: {detail}")
-        else:
-            st.error(
-                "Trade terms did not match. Renegotiate verbally and submit new declarations. " + detail
-            )
 
     pending = orders[orders["Status"] == "Pending"]
     if not pending.empty:
@@ -164,23 +167,61 @@ def render_trade_status_panel(orders, user_id: int) -> None:
             f"Awaiting response from {latest_pending['Counterparty']}: "
             f"{latest_pending['Option']} at {latest_pending['Price']:.1f}."
         )
+    else:
+        resolved = orders[orders["Status"].isin(["Matched", "Refused"])]
+        if not resolved.empty:
+            latest = resolved.sort_values("Created", ascending=False).iloc[0]
+            detail = f"{latest['Option']} with {latest['Counterparty']} at {latest['Price']:.1f}."
+            if latest["Status"] == "Matched":
+                st.success(f"Trade confirmed: {detail}")
+            else:
+                reason = latest.get("Refusal Reason") or "Terms did not match"
+                st.error(
+                    f"Trade refused: {reason}. Renegotiate verbally and submit new declarations. {detail}"
+                )
 
     counts = orders["Status"].value_counts().to_dict()
     status_chips(counts)
 
 
-def attention_queue_df(orders):
+def pending_trades_df(orders):
     if orders.empty or "Status" not in orders.columns:
         return orders
 
-    actionable = orders[orders["Status"].isin(["Pending", "Refused"])].copy()
-    if actionable.empty:
-        return actionable
+    pending = orders[orders["Status"] == "Pending"].copy()
+    if pending.empty:
+        return pending
 
     columns = ["Status", "Option", "Side", "Price", "Counterparty", "Created"]
-    if "Refusal Reason" in actionable.columns:
-        columns.insert(1, "Refusal Reason")
-    return actionable[columns]
+    return pending[columns]
+
+
+def refused_transactions_df(orders):
+    if orders.empty or "Status" not in orders.columns:
+        return orders
+
+    refused = orders[orders["Status"] == "Refused"].copy()
+    if refused.empty:
+        return refused
+
+    if "Refusal Reason" in refused.columns:
+        refused["Issue"] = refused["Refusal Reason"].replace("", "Terms did not match")
+    columns = ["Status", "Issue", "Option", "Side", "Price", "Counterparty", "Created"]
+    return refused[[column for column in columns if column in refused.columns]]
+
+
+def matched_trades_df(trades, current_username: str):
+    if trades.empty:
+        return trades
+
+    output = trades.copy()
+    output["Side"] = output["Buyer"].apply(lambda buyer: "Buy" if buyer == current_username else "Sell")
+    output["Counterparty"] = output.apply(
+        lambda row: row["Seller"] if row["Buyer"] == current_username else row["Buyer"],
+        axis=1,
+    )
+    columns = ["Type", "Underlying", "Strike", "Side", "Counterparty", "Price", "Created"]
+    return output[[column for column in columns if column in output.columns]]
 
 
 def infer_refusal_reasons(df):
@@ -203,7 +244,7 @@ def infer_refusal_reasons(df):
     for _, group in grouped:
         for _, row in group.iterrows():
             peer = reverse_lookup.get((row["Submitted By"], row["Counterparty"], row[instrument_column]))
-            reason = "Terms did not match"
+            reason = row.get("Refusal Reason") or "Terms did not match"
             if peer is not None:
                 price_mismatch = row["Price"] != peer["Price"]
                 side_mismatch = row["Side"] == peer["Side"]
@@ -216,5 +257,6 @@ def infer_refusal_reasons(df):
             reasons_by_id[row["ID"]] = reason
 
     output = df.copy()
-    output["Refusal Reason"] = output["ID"].map(reasons_by_id).fillna("")
+    existing_reasons = output["Refusal Reason"] if "Refusal Reason" in output.columns else ""
+    output["Refusal Reason"] = output["ID"].map(reasons_by_id).fillna(existing_reasons)
     return output
