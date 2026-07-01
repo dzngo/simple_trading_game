@@ -8,5 +8,5 @@ dependencies = [
     "pandas>=2.2",
     "plotly>=5.22",
     "sqlalchemy>=2.0",
-    "streamlit>=1.34",
+    "streamlit>=1.58",
 ]
