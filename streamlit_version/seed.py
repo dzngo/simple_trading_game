@@ -1,15 +1,15 @@
 from sqlalchemy import inspect, select
 
 from db import engine, get_session, init_db, reset_db
-from models import MarketPrice, MarketPriceDraft, Option, User
+from models import GameSession, MarketPrice, MarketPriceDraft, Option, ParticipantEmail, User
 
 
 DEMO_USERS = [
-    ("Company A", "Company"),
-    ("Company B", "Company"),
-    ("Bank X", "Bank"),
-    ("Bank Y", "Bank"),
-    ("Professor", "Professor"),
+    ("Company 1", "Company", ["company1@example.com"]),
+    ("Company 2", "Company", ["company2@example.com"]),
+    ("Bank 1", "Bank", ["bank1@example.com"]),
+    ("Bank 2", "Bank", ["bank2@example.com"]),
+    ("Professor", "Professor", ["professor@example.com"]),
 ]
 
 DEMO_OPTIONS = [
@@ -35,13 +35,20 @@ def schema_needs_reset() -> bool:
     tables = set(inspector.get_table_names())
     if not tables:
         return False
+    if "game_sessions" not in tables or "participants" not in tables:
+        return True
     if "products" in tables:
+        return True
+    if "users" in tables:
         return True
     if "options" not in tables:
         return True
+    option_columns = {column["name"] for column in inspector.get_columns("options")}
+    if "game_session_id" not in option_columns:
+        return True
     if "orders" in tables:
         order_columns = {column["name"] for column in inspector.get_columns("orders")}
-        if "option_id" not in order_columns:
+        if "option_id" not in order_columns or "game_session_id" not in order_columns:
             return True
     if "market_prices" in tables:
         price_columns = {column["name"] for column in inspector.get_columns("market_prices")}
@@ -57,39 +64,46 @@ def seed_demo_data(reset: bool = False) -> None:
         init_db()
 
     with get_session() as session:
-        for username, role in DEMO_USERS:
-            existing = session.scalar(select(User).where(User.username == username))
-            if existing is None:
-                session.add(User(username=username, role=role))
+        existing_session = session.scalar(select(GameSession).where(GameSession.name == "Demo Session"))
+        if existing_session is not None:
+            return
 
+        game_session = GameSession(name="Demo Session", status="live")
+        session.add(game_session)
         session.flush()
 
-        existing_options = session.scalars(select(Option)).all()
-        if not existing_options:
-            for index, option_data in enumerate(DEMO_OPTIONS, start=1):
-                option = Option(
-                    option_type=option_data["option_type"],
-                    underlying_asset=option_data["underlying_asset"],
-                    strike_price=option_data["strike_price"],
-                    is_active=True,
-                    display_order=index,
+        for username, role, emails in DEMO_USERS:
+            participant = User(game_session_id=game_session.id, username=username, role=role)
+            session.add(participant)
+            session.flush()
+            for email in emails:
+                session.add(ParticipantEmail(participant_id=participant.id, email=email))
+
+        for index, option_data in enumerate(DEMO_OPTIONS, start=1):
+            option = Option(
+                game_session_id=game_session.id,
+                option_type=option_data["option_type"],
+                underlying_asset=option_data["underlying_asset"],
+                strike_price=option_data["strike_price"],
+                is_active=True,
+                display_order=index,
+            )
+            session.add(option)
+            session.flush()
+            session.add(
+                MarketPrice(
+                    option_id=option.id,
+                    bid_price=option_data["bid_price"],
+                    ask_price=option_data["ask_price"],
                 )
-                session.add(option)
-                session.flush()
-                session.add(
-                    MarketPrice(
-                        option_id=option.id,
-                        bid_price=option_data["bid_price"],
-                        ask_price=option_data["ask_price"],
-                    )
+            )
+            session.add(
+                MarketPriceDraft(
+                    option_id=option.id,
+                    draft_bid_price=option_data["bid_price"],
+                    draft_ask_price=option_data["ask_price"],
                 )
-                session.add(
-                    MarketPriceDraft(
-                        option_id=option.id,
-                        draft_bid_price=option_data["bid_price"],
-                        draft_ask_price=option_data["ask_price"],
-                    )
-                )
+            )
 
 
 if __name__ == "__main__":

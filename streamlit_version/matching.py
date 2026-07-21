@@ -1,7 +1,7 @@
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
-from models import MarketPrice, Order, Trade
+from models import GameSession, MarketPrice, Option, Order, Trade, User
 
 
 def normalize_price(price: float) -> float:
@@ -14,17 +14,38 @@ def opposite_side(side: str) -> str:
 
 def create_trade_declaration(
     session: Session,
+    game_session_id: int,
     user_id: int,
     counterparty_id: int,
     option_id: int,
     side: str,
     price: float,
 ) -> tuple[Order, Trade | None]:
+    game_session = session.get(GameSession, game_session_id)
+    if game_session is None:
+        raise ValueError("Session not found.")
+    if game_session.status != "live":
+        raise ValueError("Trade declarations are only allowed in Live sessions.")
+
+    option = session.get(Option, option_id)
+    if option is None or option.game_session_id != game_session_id:
+        raise ValueError("Option does not belong to this session.")
+    user = session.get(User, user_id)
+    counterparty = session.get(User, counterparty_id)
+    if (
+        user is None
+        or counterparty is None
+        or user.game_session_id != game_session_id
+        or counterparty.game_session_id != game_session_id
+    ):
+        raise ValueError("Participants do not belong to this session.")
+
     submitted_price = normalize_price(price)
     if submitted_price <= 0:
         raise ValueError("Trade price must be positive.")
 
     order = Order(
+        game_session_id=game_session_id,
         user_id=user_id,
         counterparty_id=counterparty_id,
         option_id=option_id,
@@ -40,6 +61,7 @@ def create_trade_declaration(
         .where(
             and_(
                 Order.id != order.id,
+                Order.game_session_id == game_session_id,
                 Order.status == "Pending",
                 Order.option_id == option_id,
                 Order.user_id == counterparty_id,
@@ -63,6 +85,7 @@ def create_trade_declaration(
         buyer_id = order.user_id if order.side == "Buy" else compatible_order.user_id
         seller_id = order.user_id if order.side == "Sell" else compatible_order.user_id
         trade = Trade(
+            game_session_id=game_session_id,
             option_id=option_id,
             buyer_id=buyer_id,
             seller_id=seller_id,
@@ -86,14 +109,28 @@ def create_trade_declaration(
     return order, None
 
 
-def create_market_trade(session: Session, bank_id: int, option_id: int, side: str) -> Trade:
-    market_price = session.scalar(select(MarketPrice).where(MarketPrice.option_id == option_id))
+def create_market_trade(session: Session, game_session_id: int, bank_id: int, option_id: int, side: str) -> Trade:
+    game_session = session.get(GameSession, game_session_id)
+    if game_session is None:
+        raise ValueError("Session not found.")
+    if game_session.status != "live":
+        raise ValueError("Market trades are only allowed in Live sessions.")
+
+    market_price = session.scalar(
+        select(MarketPrice)
+        .join(Option)
+        .where(MarketPrice.option_id == option_id, Option.game_session_id == game_session_id)
+    )
+    bank = session.get(User, bank_id)
+    if bank is None or bank.game_session_id != game_session_id or bank.role != "Bank":
+        raise ValueError("Bank does not belong to this session.")
     if market_price is None:
         raise ValueError("No published market price exists for this option.")
 
     if side == "Buy":
         price = normalize_price(market_price.ask_price)
         trade = Trade(
+            game_session_id=game_session_id,
             option_id=option_id,
             buyer_id=bank_id,
             seller_id=None,
@@ -103,6 +140,7 @@ def create_market_trade(session: Session, bank_id: int, option_id: int, side: st
     else:
         price = normalize_price(market_price.bid_price)
         trade = Trade(
+            game_session_id=game_session_id,
             option_id=option_id,
             buyer_id=None,
             seller_id=bank_id,

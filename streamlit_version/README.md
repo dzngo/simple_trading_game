@@ -6,11 +6,15 @@ The app intentionally avoids real option pricing, Greeks, implied volatility, ex
 
 ## Features
 
-- Simple login by selecting a demo user
+- Student access by authorized email
+- Professor access by authorized email plus `PROFESSOR_PASSWORD`
+- Multiple independent game sessions
+- Session statuses: `Preparation`, `Live`, and `Closed`
+- Professor Session Manager for participants, emails, options, start/close, duplication, and draft deletion
 - Company page for trade declarations with banks
 - Bank page for trade declarations with companies and direct market trades at professor-set bid/ask prices
-- Professor page for order/trade supervision, price configuration, reset, and Plotly analytics
-- SQLite persistence
+- Professor page for order/trade supervision, price configuration, payoff review, Excel export, and payoff graph ZIP export
+- Neon Postgres persistence for deployment, with SQLite fallback for local development
 - Matching engine requiring compatible independent declarations
 - Refused status when reciprocal company-bank declarations disagree
 - Live dashboard sections refresh automatically every 5 seconds
@@ -62,7 +66,6 @@ cd streamlit_version
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python seed.py
 streamlit run app.py
 ```
 
@@ -72,15 +75,59 @@ You can also run it from the repository root:
 streamlit run streamlit_version/app.py
 ```
 
-The SQLite database path is anchored to this folder, so the app uses `streamlit_version/trading_game.db`.
+## Local Secrets
+
+Create `.streamlit/secrets.toml` at the repository root for local testing:
+
+```toml
+# Omit DATABASE_URL to use local SQLite fallback.
+# DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@HOST/DB?sslmode=require"
+
+PROFESSOR_PASSWORD = "local-professor-password"
+PROFESSOR_EMAILS = ["professor@example.com"]
+```
+
+The app reads `DATABASE_URL` from Streamlit secrets or environment variables. If it is absent, the app uses local SQLite at `streamlit_version/trading_game.db`.
+
+For command-line tests against SQLite when a Neon URL exists in secrets, use:
+
+```bash
+TRADING_GAME_FORCE_SQLITE=1 python streamlit_version/seed.py
+```
+
+## Streamlit Community Cloud
+
+Use Neon Postgres for deployed persistence. Add these Streamlit secrets:
+
+```toml
+DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@HOST/DB?sslmode=require"
+PROFESSOR_PASSWORD = "change-this-password"
+PROFESSOR_EMAILS = ["professor@example.com"]
+```
+
+Never commit secrets. To rotate the Neon credential, update `DATABASE_URL` in Streamlit secrets and restart the app. To change professor access, update `PROFESSOR_PASSWORD` and `PROFESSOR_EMAILS`.
+
+## Session Statuses
+
+- `Preparation`: professor configures participants, emails, options, and market prices. Students cannot trade.
+- `Live`: students can trade. Professor can monitor trades, adjust market bid/ask prices, and fix authorized emails.
+- `Closed`: session is read-only. Professor can review, export, and duplicate setup into a new Preparation session.
 
 ## Demo Users
 
-- Company A
-- Company B
-- Bank X
-- Bank Y
-- Professor
+Demo seeding is development-only:
+
+```bash
+TRADING_GAME_FORCE_SQLITE=1 python streamlit_version/seed.py
+```
+
+Seeded local emails:
+
+- `company1@example.com`
+- `company2@example.com`
+- `bank1@example.com`
+- `bank2@example.com`
+- `professor@example.com`
 
 ## Trading Rules
 

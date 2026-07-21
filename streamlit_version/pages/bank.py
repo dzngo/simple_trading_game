@@ -29,12 +29,13 @@ from ui import (
 st.set_page_config(page_title="Bank", page_icon="bank", layout="wide")
 
 inject_app_styles()
-user = require_login({"Bank"})
+user = require_login({"Bank"}, allowed_statuses={"live"})
+GAME_SESSION_ID = int(st.session_state["game_session_id"])
 
 
 def get_market_prices(option_id: int) -> tuple[float, float]:
     with get_session() as session:
-        return market_price_for_option(session, option_id)
+        return market_price_for_option(session, option_id, GAME_SESSION_ID)
 
 
 def format_market_trade_confirmation(trade_id: int, option_text: str, side: str, price: float, created_at) -> str:
@@ -46,16 +47,16 @@ def format_market_trade_confirmation(trade_id: int, option_text: str, side: str,
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_bank_live_panel(user_id: int) -> None:
     with get_session() as session:
-        option_options = active_options(session)
-        company_options = users_by_role(session, "Company")
-        market_prices = market_prices_df(session)
-        orders = orders_df(session, user_id=user_id)
+        option_options = active_options(session, GAME_SESSION_ID)
+        company_options = users_by_role(session, "Company", GAME_SESSION_ID)
+        market_prices = market_prices_df(session, GAME_SESSION_ID)
+        orders = orders_df(session, GAME_SESSION_ID, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
         pending = pending_trades_df(orders_with_reasons)
         refused = refused_transactions_df(orders_with_reasons)
-        trades = trades_df(session, user_id=user_id, source="Client-Bank")
+        trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Client-Bank")
         matched = matched_trades_df(trades, user.username)
-        market_trades = trades_df(session, user_id=user_id, source="Market")
+        market_trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Market")
         market_history = matched_trades_df(market_trades, user.username)
 
     auto_refresh_caption()
@@ -87,8 +88,8 @@ st.markdown(
 show_user_sidebar(user)
 
 with get_session() as session:
-    option_options = active_options(session)
-    company_options = users_by_role(session, "Company")
+    option_options = active_options(session, GAME_SESSION_ID)
+    company_options = users_by_role(session, "Company", GAME_SESSION_ID)
 
 left, right = st.columns([1, 1.35], gap="large")
 
@@ -101,26 +102,10 @@ with left:
         else:
             option = st.selectbox("Option", option_options, format_func=option_label, key="bank_client_option")
             side = st.segmented_control("Side", ["Buy", "Sell"], default="Buy", key="bank_declaration_side")
-            bid_price, ask_price = get_market_prices(option.id)
-            suggested_price = ask_price if side == "Sell" else bid_price
-
-            if (
-                st.session_state.get("bank_price_option_id") != option.id
-                or st.session_state.get("bank_price_side") != side
-            ):
-                st.session_state["bank_agreed_price"] = suggested_price
-                st.session_state["bank_price_option_id"] = option.id
-                st.session_state["bank_price_side"] = side
-
-            price_col, button_col = st.columns([1, 1])
-            price_col.metric("Suggested Price", f"{suggested_price:.1f}")
-            if button_col.button("Use bid/ask", width="stretch"):
-                st.session_state["bank_agreed_price"] = suggested_price
-                st.rerun()
-
             st.number_input(
                 "Agreed price",
                 min_value=0.1,
+                value=10.0,
                 step=0.1,
                 format="%.1f",
                 key="bank_agreed_price",
@@ -138,6 +123,7 @@ with left:
                 with get_session() as session:
                     create_trade_declaration(
                         session=session,
+                        game_session_id=GAME_SESSION_ID,
                         user_id=user.id,
                         counterparty_id=counterparty.id,
                         option_id=option.id,
@@ -167,6 +153,7 @@ with left:
                 with get_session() as session:
                     trade = create_market_trade(
                         session=session,
+                        game_session_id=GAME_SESSION_ID,
                         bank_id=user.id,
                         option_id=market_option.id,
                         side=market_side,

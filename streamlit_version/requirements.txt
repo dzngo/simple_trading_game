@@ -2,3 +2,6 @@ streamlit>=1.34
 sqlalchemy>=2.0
 pandas>=2.2
 plotly>=5.22
+psycopg[binary]>=3.2
+xlsxwriter>=3.2
+matplotlib>=3.8

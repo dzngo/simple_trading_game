@@ -1,55 +1,228 @@
+import os
+
 import streamlit as st
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from db import get_session
-from models import User
-from seed import seed_demo_data
+from db import get_session, init_db
+from models import GameSession, ParticipantEmail, User
+from session_manager import (
+    create_game_session,
+    live_sessions_for_email,
+    normalize_email,
+    participants_for_session,
+    professor_participants_for_email,
+    valid_email,
+)
 from ui import inject_app_styles
-
 
 st.set_page_config(page_title="Trading Game", page_icon="chart_with_upwards_trend", layout="wide")
 
-seed_demo_data()
+init_db()
 inject_app_styles()
-
-st.title("Options Trading Game")
-st.markdown(
-    '<div class="role-strip">Choose a demo seat and go directly to the right trading desk.</div>',
-    unsafe_allow_html=True,
-)
-
-with get_session() as session:
-    users = session.scalars(select(User).order_by(User.role, User.username)).all()
-
-current_user_id = st.session_state.get("user_id")
-current_user = next((user for user in users if user.id == current_user_id), None)
 
 ROLE_PAGES = {
     "Company": "pages/company.py",
     "Bank": "pages/bank.py",
-    "Professor": "pages/professor.py",
+    "Professor": "pages/session_manager.py",
 }
 
-if current_user is not None:
-    left, right = st.columns([2, 1])
-    left.success(f"Signed in as {current_user.username} ({current_user.role})")
-    if right.button("Open my dashboard", type="primary", width="stretch"):
-        st.switch_page(ROLE_PAGES[current_user.role])
-    if right.button("Switch user", width="stretch"):
+
+def professor_password() -> str | None:
+    try:
+        value = st.secrets.get("PROFESSOR_PASSWORD")
+    except Exception:
+        value = None
+    return value or os.getenv("PROFESSOR_PASSWORD")
+
+
+def configured_professor_emails() -> set[str]:
+    try:
+        raw_value = st.secrets.get("PROFESSOR_EMAILS")
+    except Exception:
+        raw_value = None
+
+    raw_value = raw_value or os.getenv("PROFESSOR_EMAILS")
+    if raw_value is None:
+        return set()
+    if isinstance(raw_value, str):
+        values = raw_value.replace(";", ",").replace("\n", ",").split(",")
+    else:
+        values = list(raw_value)
+    return {normalize_email(str(value)) for value in values if str(value).strip()}
+
+
+def professor_for_bootstrap_email(session, email: str) -> User:
+    game_session = session.scalar(select(GameSession).order_by(GameSession.created_at.desc()))
+    if game_session is None:
+        game_session = create_game_session(session, "First Session")
+
+    professors = participants_for_session(session, game_session.id, "Professor")
+    professor = (
+        professors[0]
+        if professors
+        else User(
+            game_session_id=game_session.id,
+            username="Professor",
+            role="Professor",
+        )
+    )
+    if not professors:
+        session.add(professor)
+        session.flush()
+
+    existing_emails = {participant_email.email for participant_email in professor.emails}
+    if email not in existing_emails:
+        professor.emails.append(ParticipantEmail(email=email))
+        session.flush()
+    return professor
+
+
+def sign_in(participant: User, professor_authenticated: bool = False) -> None:
+    st.session_state["user_id"] = participant.id
+    st.session_state["role"] = participant.role
+    st.session_state["game_session_id"] = participant.game_session_id
+    if professor_authenticated:
+        st.session_state["professor_authenticated"] = True
+    st.switch_page(ROLE_PAGES[participant.role])
+
+
+def render_student_login() -> None:
+    st.subheader("Student access", anchor=False)
+    email = st.text_input("Authorized email", key="student_email").strip()
+    if st.button("Enter game", type="primary", width="stretch"):
+        normalized = normalize_email(email)
+        if not valid_email(normalized):
+            st.error("Enter a valid authorized email.")
+            return
+        target_participant = None
+        with get_session() as session:
+            matches = live_sessions_for_email(session, normalized)
+            if not matches:
+                st.error("No live session is available for this email.")
+                return
+            if len(matches) == 1:
+                _, target_participant = matches[0]
+            else:
+                st.session_state["student_login_matches"] = [participant.id for _, participant in matches]
+                st.rerun()
+        if target_participant is not None:
+            sign_in(target_participant)
+
+
+def render_student_session_choice() -> None:
+    participant_ids = st.session_state.get("student_login_matches", [])
+    if not participant_ids:
+        return
+
+    with get_session() as session:
+        participants = [session.get(User, participant_id) for participant_id in participant_ids]
+        participants = [participant for participant in participants if participant is not None]
+        labels = {
+            participant.id: f"{participant.game_session.name} - {participant.username}" for participant in participants
+        }
+
+    if not participants:
+        st.session_state.pop("student_login_matches", None)
+        return
+
+    st.subheader("Choose session", anchor=False)
+    selected = st.radio(
+        "Your email is authorized in more than one live session.",
+        participants,
+        format_func=lambda item: labels[item.id],
+    )
+    if st.button("Continue", type="primary", width="stretch"):
+        sign_in(selected)
+
+
+def render_professor_login() -> None:
+    st.subheader("Professor access", anchor=False)
+    configured_password = professor_password()
+    email = st.text_input("Professor email", key="professor_email").strip()
+    password = st.text_input("Professor password", type="password", key="professor_password")
+
+    if configured_password is None:
+        st.error("PROFESSOR_PASSWORD is not configured in Streamlit secrets.")
+        return
+
+    if st.button("Open professor tools", type="primary", width="stretch"):
+        normalized = normalize_email(email)
+        if not valid_email(normalized):
+            st.error("Enter a valid professor email.")
+            return
+        if password != configured_password:
+            st.error("Professor password is incorrect.")
+            return
+
+        target_professor = None
+        with get_session() as session:
+            professors = professor_participants_for_email(session, normalized)
+            if professors:
+                target_professor = professors[0]
+            elif normalized in configured_professor_emails():
+                target_professor = professor_for_bootstrap_email(session, normalized)
+            else:
+                session_count = session.scalar(select(func.count(GameSession.id))) or 0
+                if session_count:
+                    st.error("This email is not authorized as a professor.")
+                    return
+
+                first_session = create_game_session(session, "First Session")
+                target_professor = participants_for_session(session, first_session.id, "Professor")[0]
+                target_professor.emails.append(ParticipantEmail(email=normalized))
+                session.flush()
+
+        if target_professor is not None:
+            sign_in(target_professor, professor_authenticated=True)
+
+
+def render_access_choice() -> str | None:
+    st.markdown('<div class="login-panel-title">How are you joining?</div>', unsafe_allow_html=True)
+    student_col, professor_col = st.columns(2, gap="small")
+    selected_path = st.session_state.get("access_path")
+    with student_col:
+        if st.button(
+            "Student",
+            icon=":material/school:",
+            type="primary" if selected_path == "Student" else "secondary",
+            width="stretch",
+        ):
+            st.session_state["access_path"] = "Student"
+            st.rerun()
+    with professor_col:
+        if st.button(
+            "Professor",
+            icon=":material/admin_panel_settings:",
+            type="primary" if selected_path == "Professor" else "secondary",
+            width="stretch",
+        ):
+            st.session_state["access_path"] = "Professor"
+            st.rerun()
+    return st.session_state.get("access_path")
+
+
+if st.session_state.get("user_id"):
+    st.title("Trading Game")
+    role = st.session_state.get("role")
+    st.success(f"Signed in as {role}.")
+    col1, col2 = st.columns(2)
+    if col1.button("Continue", type="primary", width="stretch"):
+        st.switch_page(ROLE_PAGES[role])
+    if col2.button("Switch user", width="stretch"):
         st.session_state.clear()
         st.rerun()
 else:
-    st.subheader("Enter The Simulation")
-    users_by_role = {
-        role: [user for user in users if user.role == role]
-        for role in ["Company", "Bank", "Professor"]
-    }
-    role_columns = st.columns(3)
-    for column, role in zip(role_columns, ["Company", "Bank", "Professor"]):
-        with column:
-            st.markdown(f"### {role}")
-            for user in users_by_role[role]:
-                if st.button(user.username, key=f"login_{user.id}", type="primary", width="stretch"):
-                    st.session_state["user_id"] = user.id
-                    st.session_state["role"] = user.role
-                    st.switch_page(ROLE_PAGES[user.role])
+    left_margin, login_col, right_margin = st.columns([1, 1.1, 1])
+    with login_col:
+        with st.container(border=True):
+            st.title("Trading Game", text_alignment="center")
+            st.caption("Choose your access type to continue.", unsafe_allow_html=False)
+            access_path = render_access_choice()
+            st.markdown('<div class="login-divider"></div>', unsafe_allow_html=True)
+            if access_path == "Student" or st.session_state.get("student_login_matches"):
+                render_student_session_choice()
+                render_student_login()
+            elif access_path == "Professor":
+                render_professor_login()
+            else:
+                st.markdown('<div class="login-empty-state">Select Student or Professor.</div>', unsafe_allow_html=True)

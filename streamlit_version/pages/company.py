@@ -21,20 +21,21 @@ from ui import (
 st.set_page_config(page_title="Company", page_icon="office", layout="wide")
 
 inject_app_styles()
-user = require_login({"Company"})
+user = require_login({"Company"}, allowed_statuses={"live"})
+GAME_SESSION_ID = int(st.session_state["game_session_id"])
 
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_company_live_panel(user_id: int) -> None:
     with get_session() as session:
-        option_options = active_options(session)
-        bank_options = users_by_role(session, "Bank")
-        visible_options = options_df(session, include_market=False)
-        orders = orders_df(session, user_id=user_id)
+        option_options = active_options(session, GAME_SESSION_ID)
+        bank_options = users_by_role(session, "Bank", GAME_SESSION_ID)
+        visible_options = options_df(session, GAME_SESSION_ID, include_market=False)
+        orders = orders_df(session, GAME_SESSION_ID, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
         pending = pending_trades_df(orders_with_reasons)
         refused = refused_transactions_df(orders_with_reasons)
-        trades = trades_df(session, user_id=user_id, source="Client-Bank")
+        trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Client-Bank")
         matched = matched_trades_df(trades, user.username)
 
     auto_refresh_caption()
@@ -63,8 +64,8 @@ st.markdown(
 show_user_sidebar(user)
 
 with get_session() as session:
-    option_options = active_options(session)
-    bank_options = users_by_role(session, "Bank")
+    option_options = active_options(session, GAME_SESSION_ID)
+    bank_options = users_by_role(session, "Bank", GAME_SESSION_ID)
 
 left, right = st.columns([1, 1.35], gap="large")
 
@@ -95,6 +96,7 @@ if submitted:
     with get_session() as session:
         create_trade_declaration(
             session=session,
+            game_session_id=GAME_SESSION_ID,
             user_id=user.id,
             counterparty_id=counterparty.id,
             option_id=option.id,

@@ -2,21 +2,29 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from models import MarketPrice, MarketPriceDraft, Option, Order, Trade, User
+from models import MarketPrice, Option, Order, Trade, User
 
 
-def users_by_role(session: Session, role: str) -> list[User]:
-    return list(session.scalars(select(User).where(User.role == role).order_by(User.username)))
-
-
-def trading_started(session: Session) -> bool:
-    return session.scalar(select(func.count(Order.id))) > 0
-
-
-def active_options(session: Session) -> list[Option]:
+def users_by_role(session: Session, role: str, game_session_id: int) -> list[User]:
     return list(
         session.scalars(
-            select(Option).where(Option.is_active.is_(True)).order_by(Option.display_order, Option.id)
+            select(User)
+            .where(User.role == role, User.game_session_id == game_session_id)
+            .order_by(User.username)
+        )
+    )
+
+
+def trading_started(session: Session, game_session_id: int) -> bool:
+    return session.scalar(select(func.count(Order.id)).where(Order.game_session_id == game_session_id)) > 0
+
+
+def active_options(session: Session, game_session_id: int) -> list[Option]:
+    return list(
+        session.scalars(
+            select(Option)
+            .where(Option.game_session_id == game_session_id, Option.is_active.is_(True))
+            .order_by(Option.display_order, Option.id)
         )
     )
 
@@ -25,10 +33,10 @@ def option_label(option: Option) -> str:
     return f"{option.option_type} {option.underlying_asset} K={option.strike_price}"
 
 
-def options_df(session: Session, include_market: bool = False) -> pd.DataFrame:
+def options_df(session: Session, game_session_id: int, include_market: bool = False) -> pd.DataFrame:
     options = session.scalars(
         select(Option)
-        .where(Option.is_active.is_(True))
+        .where(Option.game_session_id == game_session_id, Option.is_active.is_(True))
         .options(joinedload(Option.market_price))
         .order_by(Option.display_order, Option.id)
     ).all()
@@ -47,10 +55,10 @@ def options_df(session: Session, include_market: bool = False) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def market_prices_df(session: Session, include_drafts: bool = False) -> pd.DataFrame:
+def market_prices_df(session: Session, game_session_id: int, include_drafts: bool = False) -> pd.DataFrame:
     options = session.scalars(
         select(Option)
-        .where(Option.is_active.is_(True))
+        .where(Option.game_session_id == game_session_id, Option.is_active.is_(True))
         .options(joinedload(Option.market_price), joinedload(Option.market_price_draft))
         .order_by(Option.display_order, Option.id)
     ).all()
@@ -79,16 +87,26 @@ def market_prices_df(session: Session, include_drafts: bool = False) -> pd.DataF
 def market_price_for_option(
     session: Session,
     option_id: int,
+    game_session_id: int,
     default_bid: float = 9.0,
     default_ask: float = 11.0,
 ) -> tuple[float, float]:
-    price = session.scalar(select(MarketPrice).where(MarketPrice.option_id == option_id))
+    price = session.scalar(
+        select(MarketPrice)
+        .join(Option)
+        .where(MarketPrice.option_id == option_id, Option.game_session_id == game_session_id)
+    )
     if price is None:
         return default_bid, default_ask
     return float(price.bid_price), float(price.ask_price)
 
 
-def orders_df(session: Session, user_id: int | None = None, status: str | None = None) -> pd.DataFrame:
+def orders_df(
+    session: Session,
+    game_session_id: int,
+    user_id: int | None = None,
+    status: str | None = None,
+) -> pd.DataFrame:
     statement = (
         select(Order)
         .options(
@@ -97,6 +115,7 @@ def orders_df(session: Session, user_id: int | None = None, status: str | None =
             joinedload(Order.option),
         )
         .order_by(Order.created_at.desc())
+        .where(Order.game_session_id == game_session_id)
     )
     if user_id is not None:
         # Counterparty declarations remain private until a trade resolves.
@@ -163,6 +182,7 @@ def refusal_reasons_for_orders(session: Session, orders: list[Order]) -> dict[in
 
 def trades_df(
     session: Session,
+    game_session_id: int,
     user_id: int | None = None,
     source: str | None = None,
 ) -> pd.DataFrame:
@@ -174,6 +194,7 @@ def trades_df(
             joinedload(Trade.seller),
         )
         .order_by(Trade.created_at.desc())
+        .where(Trade.game_session_id == game_session_id)
     )
     if user_id is not None:
         statement = statement.where((Trade.buyer_id == user_id) | (Trade.seller_id == user_id))
@@ -200,11 +221,17 @@ def trades_df(
     )
 
 
-def pnl_df(session: Session) -> pd.DataFrame:
-    users = session.scalars(select(User).where(User.role != "Professor").order_by(User.username)).all()
+def pnl_df(session: Session, game_session_id: int) -> pd.DataFrame:
+    users = session.scalars(
+        select(User)
+        .where(User.game_session_id == game_session_id, User.role != "Professor")
+        .order_by(User.username)
+    ).all()
     balances = {user.id: {"Participant": user.username, "Cumulative P/L": 0.0} for user in users}
 
-    trades = session.scalars(select(Trade).order_by(Trade.created_at.asc())).all()
+    trades = session.scalars(
+        select(Trade).where(Trade.game_session_id == game_session_id).order_by(Trade.created_at.asc())
+    ).all()
     for trade in trades:
         if trade.buyer_id in balances:
             balances[trade.buyer_id]["Cumulative P/L"] -= trade.price
@@ -214,13 +241,19 @@ def pnl_df(session: Session) -> pd.DataFrame:
     return pd.DataFrame(balances.values())
 
 
-def cumulative_pnl_history_df(session: Session) -> pd.DataFrame:
-    users = session.scalars(select(User).where(User.role != "Professor").order_by(User.username)).all()
+def cumulative_pnl_history_df(session: Session, game_session_id: int) -> pd.DataFrame:
+    users = session.scalars(
+        select(User)
+        .where(User.game_session_id == game_session_id, User.role != "Professor")
+        .order_by(User.username)
+    ).all()
     balances = {user.id: 0.0 for user in users}
     names = {user.id: user.username for user in users}
     records = []
 
-    trades = session.scalars(select(Trade).order_by(Trade.created_at.asc())).all()
+    trades = session.scalars(
+        select(Trade).where(Trade.game_session_id == game_session_id).order_by(Trade.created_at.asc())
+    ).all()
     for trade in trades:
         if trade.buyer_id in balances:
             balances[trade.buyer_id] -= trade.price
@@ -239,18 +272,19 @@ def cumulative_pnl_history_df(session: Session) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
-def trading_activity_df(session: Session) -> pd.DataFrame:
-    df = trades_df(session)
+def trading_activity_df(session: Session, game_session_id: int) -> pd.DataFrame:
+    df = trades_df(session, game_session_id)
     if df.empty:
         return pd.DataFrame(columns=["Option", "Source", "Trades"])
     return df.groupby(["Option", "Source"], as_index=False).size().rename(columns={"size": "Trades"})
 
 
-def client_bank_trades_for_group(session: Session, user_id: int) -> list[Trade]:
+def client_bank_trades_for_group(session: Session, game_session_id: int, user_id: int) -> list[Trade]:
     return list(
         session.scalars(
             select(Trade)
             .where(
+                Trade.game_session_id == game_session_id,
                 Trade.source == "Client-Bank",
                 (Trade.buyer_id == user_id) | (Trade.seller_id == user_id),
             )

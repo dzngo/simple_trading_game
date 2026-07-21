@@ -1,16 +1,21 @@
 import streamlit as st
 
 from db import get_session
-from models import User
+from models import GameSession, User
+from session_manager import status_label
 
 AUTO_REFRESH_SECONDS = 1
 AUTO_REFRESH_INTERVAL = f"{AUTO_REFRESH_SECONDS}s"
 
 
-def require_login(allowed_roles: set[str] | None = None) -> User:
+def require_login(
+    allowed_roles: set[str] | None = None,
+    allowed_statuses: set[str] | None = None,
+) -> User:
     user_id = st.session_state.get("user_id")
+    game_session_id = st.session_state.get("game_session_id")
     if user_id is None:
-        st.warning("Select a user on the login page to continue.")
+        st.warning("Enter with your authorized email to continue.")
         st.page_link("app.py", label="Go to login")
         st.stop()
 
@@ -26,6 +31,24 @@ def require_login(allowed_roles: set[str] | None = None) -> User:
             st.error(f"This page is for {', '.join(sorted(allowed_roles))} users.")
             st.stop()
 
+        if game_session_id is not None and user.game_session_id != game_session_id:
+            st.session_state.clear()
+            st.warning("Your selected session changed. Please log in again.")
+            st.page_link("app.py", label="Go to login")
+            st.stop()
+
+        game_session = session.get(GameSession, user.game_session_id)
+        if game_session is None:
+            st.session_state.clear()
+            st.warning("This session no longer exists. Please log in again.")
+            st.page_link("app.py", label="Go to login")
+            st.stop()
+
+        if allowed_statuses is not None and game_session.status not in allowed_statuses:
+            st.warning(f"{game_session.name} is {status_label(game_session.status)}.")
+            st.page_link("app.py", label="Go to login")
+            st.stop()
+
         return user
 
 
@@ -34,7 +57,14 @@ def show_user_sidebar(user: User) -> None:
     if action_col.button("Switch user", key=f"switch_user_{user.id}", width="stretch"):
         st.session_state.clear()
         st.switch_page("app.py")
-    user_col.caption(f"Signed in as {user.username} ({user.role})")
+    with get_session() as session:
+        game_session = session.get(GameSession, user.game_session_id)
+    session_text = (
+        f"{game_session.name} · {status_label(game_session.status)}"
+        if game_session is not None
+        else "Unknown session"
+    )
+    user_col.caption(f"{session_text} · {user.username} ({user.role})")
 
 
 def show_table(df, empty_message: str, hide_id: bool = True) -> None:
@@ -71,14 +101,61 @@ def inject_app_styles() -> None:
             background: #f6f7f9;
         }
         [data-testid="stHeader"] {
-            background: rgba(246, 247, 249, 0.88);
+            display: none;
+            height: 0;
         }
         [data-testid="stSidebar"] {
             display: none;
         }
+        [data-testid="stSidebarNav"] {
+            display: none;
+        }
+        [data-testid="stToolbar"] {
+            display: none;
+        }
+        #MainMenu {
+            visibility: hidden;
+        }
         .block-container {
-            padding-top: 1.4rem;
+            padding-top: 1.2rem;
             padding-bottom: 3rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.login-panel-title) {
+            background: #ffffff;
+            border: 1px solid #e0e5ec;
+            border-radius: 8px;
+            box-shadow: 0 12px 32px rgba(31, 41, 55, 0.08);
+            padding: 1.4rem 1.45rem 1.55rem;
+        }
+        .login-panel-title {
+            color: #2f3442;
+            font-size: 1.2rem;
+            font-weight: 700;
+            line-height: 1.25;
+            margin: 0.7rem 0 0.65rem;
+            text-align: center;
+        }
+        .login-divider {
+            border-top: 1px solid #e8ebf0;
+            margin: 1rem 0 0.9rem;
+        }
+        .login-empty-state {
+            color: #6b7280;
+            font-size: 0.95rem;
+            padding: 0.45rem 0 0.2rem;
+            text-align: center;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.login-panel-title) h1 {
+            font-size: 2.15rem;
+            letter-spacing: 0;
+            margin-bottom: 0.25rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.login-panel-title) h3 {
+            font-size: 1.05rem;
+            margin-top: 0.1rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.login-panel-title) button {
+            min-height: 3rem;
         }
         div[data-testid="stVerticalBlockBorderWrapper"] h3 {
             font-size: 1.2rem;

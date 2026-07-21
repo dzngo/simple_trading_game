@@ -10,15 +10,15 @@ from analytics import (
     payoff_curve_df,
     pnl_df,
     selected_trade_totals,
-    trading_started,
     trades_df,
     orders_df,
     users_by_role,
 )
 from db import get_session
+from exports import export_workbook_bytes, payoff_graph_zip_bytes, safe_filename
 from matching import normalize_price
-from models import MarketPrice, MarketPriceDraft, Option
-from seed import seed_demo_data
+from models import GameSession, MarketPrice, MarketPriceDraft, Option
+from session_manager import status_label
 from ui import (
     AUTO_REFRESH_INTERVAL,
     auto_refresh_caption,
@@ -33,7 +33,8 @@ from ui import (
 st.set_page_config(page_title="Professor", page_icon="mortar_board", layout="wide")
 
 inject_app_styles()
-user = require_login({"Professor"})
+user = require_login({"Professor"}, allowed_statuses={"live", "closed"})
+GAME_SESSION_ID = int(st.session_state["game_session_id"])
 
 
 def default_underlying(display_order: int) -> str:
@@ -53,7 +54,11 @@ def ensure_market_rows(session, option: Option, bid_price: float = 9.0, ask_pric
 
 def active_options_for_setup(session) -> list[Option]:
     return list(
-        session.scalars(select(Option).where(Option.is_active.is_(True)).order_by(Option.display_order, Option.id))
+        session.scalars(
+            select(Option)
+            .where(Option.game_session_id == GAME_SESSION_ID, Option.is_active.is_(True))
+            .order_by(Option.display_order, Option.id)
+        )
     )
 
 
@@ -66,7 +71,11 @@ def set_active_option_count(session, target_count: int) -> None:
         return
 
     inactive_options = list(
-        session.scalars(select(Option).where(Option.is_active.is_(False)).order_by(Option.display_order, Option.id))
+        session.scalars(
+            select(Option)
+            .where(Option.game_session_id == GAME_SESSION_ID, Option.is_active.is_(False))
+            .order_by(Option.display_order, Option.id)
+        )
     )
     while len(active_options) < target_count:
         display_order = len(active_options) + 1
@@ -76,6 +85,7 @@ def set_active_option_count(session, target_count: int) -> None:
             option.display_order = display_order
         else:
             option = Option(
+                game_session_id=GAME_SESSION_ID,
                 option_type="Call",
                 underlying_asset=default_underlying(display_order),
                 strike_price=100 + (display_order - 1) * 10,
@@ -206,6 +216,9 @@ def apply_catalog_update(session, rows: list[dict], target_count: int) -> None:
 
 def publish_market_prices() -> tuple[bool, str]:
     with get_session() as session:
+        game_session = session.get(GameSession, GAME_SESSION_ID)
+        if game_session is None or game_session.status != "live":
+            return False, "Market prices can only be adjusted while the session is Live."
         rows = option_setup_rows(session).to_dict("records")
         errors = validate_setup_rows(rows, definitions_locked=True)
         if errors:
@@ -334,11 +347,11 @@ def render_refusal_cases(refused_orders: pd.DataFrame) -> None:
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_trade_history() -> None:
     with get_session() as session:
-        all_orders = infer_refusal_reasons(orders_df(session))
-        pending_orders = orders_df(session, status="Pending")
-        refused_orders = infer_refusal_reasons(orders_df(session, status="Refused"))
-        client_bank_trades = trades_df(session, source="Client-Bank")
-        market_trades = trades_df(session, source="Market")
+        all_orders = infer_refusal_reasons(orders_df(session, GAME_SESSION_ID))
+        pending_orders = orders_df(session, GAME_SESSION_ID, status="Pending")
+        refused_orders = infer_refusal_reasons(orders_df(session, GAME_SESSION_ID, status="Refused"))
+        client_bank_trades = trades_df(session, GAME_SESSION_ID, source="Client-Bank")
+        market_trades = trades_df(session, GAME_SESSION_ID, source="Market")
 
     auto_refresh_caption()
     with st.container(border=True):
@@ -351,29 +364,28 @@ def render_trade_history() -> None:
             }
         )
 
-        client_bank_tab, refused_tab, market_tab, all_tab = st.tabs(
-            ["Company-Bank trades", "Refused transactions", "Market trades", "All transactions"]
+        client_bank_tab, market_tab, all_tab = st.tabs(
+            ["Company-Bank trades", "Market trades", "All declarations"]
         )
         with client_bank_tab:
             show_table(client_bank_trades, "No client-bank trades matched yet.")
-        with refused_tab:
-            render_refusal_cases(refused_orders)
         with market_tab:
             show_table(market_trades, "No market transactions yet.")
         with all_tab:
             show_table(all_orders, "No orders submitted yet.")
+        with st.expander("Diagnostics: refused declarations"):
+            render_refusal_cases(refused_orders)
 
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_professor_analytics() -> None:
     with get_session() as session:
-        pnl = pnl_df(session)
-        pnl_history = cumulative_pnl_history_df(session)
+        pnl = pnl_df(session, GAME_SESSION_ID)
+        pnl_history = cumulative_pnl_history_df(session, GAME_SESSION_ID)
 
-    with st.container(border=True):
-        st.subheader("Analytics")
+    with st.expander("Cash balance analytics"):
         if pnl_history.empty:
-            st.info("No trades yet. P/L chart will appear after the first trade.")
+            st.info("No trades yet. Cash balance chart will appear after the first trade.")
         else:
             fig = px.line(
                 pnl_history,
@@ -393,7 +405,9 @@ def render_option_setup() -> None:
         header_col.subheader("Options and market prices")
 
         with get_session() as session:
-            definitions_locked = trading_started(session)
+            game_session = session.get(GameSession, GAME_SESSION_ID)
+            definitions_locked = game_session.status != "preparation" if game_session is not None else True
+            prices_locked = game_session.status != "live" if game_session is not None else True
             current_count = len(active_options_for_setup(session))
 
         if definitions_locked:
@@ -415,7 +429,7 @@ def render_option_setup() -> None:
         )
         catalog_count_changed = int(requested_count) != current_count
         if definitions_locked:
-            note_col.caption("Definitions and count are locked after the first declaration.")
+            note_col.caption("Definitions and count are locked outside Preparation.")
         elif catalog_count_changed:
             note_col.warning(
                 f"Catalog update staged: desks still see {current_count} active option(s).",
@@ -485,6 +499,7 @@ def render_option_setup() -> None:
                 "Adjust market prices",
                 type="primary",
                 icon=":material/publish:",
+                disabled=prices_locked,
                 width="stretch",
             ):
                 success, message = publish_market_prices()
@@ -503,7 +518,9 @@ def render_option_setup() -> None:
 
 def render_group_payoff_summary() -> None:
     with get_session() as session:
-        participants = users_by_role(session, "Company") + users_by_role(session, "Bank")
+        participants = users_by_role(session, "Company", GAME_SESSION_ID) + users_by_role(
+            session, "Bank", GAME_SESSION_ID
+        )
 
     if not participants:
         st.info("No company or bank groups found.")
@@ -511,7 +528,7 @@ def render_group_payoff_summary() -> None:
 
     selected_user = st.selectbox("Group", participants, format_func=lambda item: item.username)
     with get_session() as session:
-        trades = client_bank_trades_for_group(session, selected_user.id)
+        trades = client_bank_trades_for_group(session, GAME_SESSION_ID, selected_user.id)
 
     if not trades:
         st.info("No matched client-bank trades for this group yet.")
@@ -562,21 +579,55 @@ def render_group_payoff_summary() -> None:
         st.plotly_chart(fig, width="stretch")
 
 
+def render_exports(selected_session: GameSession | None) -> None:
+    if selected_session is None:
+        return
+    with st.container(border=True):
+        st.subheader("Exports")
+        export_cols = st.columns(2)
+        try:
+            with get_session() as session:
+                workbook = export_workbook_bytes(session, GAME_SESSION_ID)
+            export_cols[0].download_button(
+                "Download Excel workbook",
+                data=workbook,
+                file_name=f"{safe_filename(selected_session.name)}_trading_game.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+        except Exception as exc:
+            export_cols[0].error(f"Workbook export unavailable: {exc}")
+
+        try:
+            with get_session() as session:
+                graph_zip = payoff_graph_zip_bytes(session, GAME_SESSION_ID)
+            if graph_zip:
+                export_cols[1].download_button(
+                    "Download payoff graphs",
+                    data=graph_zip,
+                    file_name=f"{safe_filename(selected_session.name)}_payoff_graphs.zip",
+                    mime="application/zip",
+                    width="stretch",
+                )
+            else:
+                export_cols[1].caption("No payoff graphs available yet.")
+        except Exception as exc:
+            export_cols[1].error(f"Payoff graph export unavailable: {exc}")
+
+
+with get_session() as session:
+    selected_session = session.get(GameSession, GAME_SESSION_ID)
+
 st.title("Professor control room")
-st.markdown(
-    '<div class="role-strip">Configure options, publish market prices, monitor declarations, and review group outcomes.</div>',
-    unsafe_allow_html=True,
-)
+if selected_session is not None:
+    st.markdown(
+        f'<div class="role-strip">{selected_session.name} · {status_label(selected_session.status)}</div>',
+        unsafe_allow_html=True,
+    )
 show_user_sidebar(user)
 
-with st.expander("Reset game state"):
-    st.warning("This clears all orders and trades and restores demo users, options, and market prices.")
-    if st.button("Reset game", type="primary"):
-        seed_demo_data(reset=True)
-        st.session_state.pop("prof_option_count", None)
-        st.session_state.pop("prof_option_count_draft", None)
-        st.success("Game state reset.")
-        st.rerun()
+if st.button("Back to Session Manager", width="content"):
+    st.switch_page("pages/session_manager.py")
 
 top_left, top_right = st.columns(2)
 with top_left:
@@ -584,10 +635,9 @@ with top_left:
 with top_right:
     render_trade_history()
 
-bottom_left, bottom_right = st.columns(2)
-with bottom_left:
-    with st.container(border=True):
-        st.subheader("Group payoff")
-        render_group_payoff_summary()
-with bottom_right:
-    render_professor_analytics()
+with st.container(border=True):
+    st.subheader("Group payoff")
+    render_group_payoff_summary()
+
+render_exports(selected_session)
+render_professor_analytics()
