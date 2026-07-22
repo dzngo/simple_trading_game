@@ -109,7 +109,7 @@ def render_bank_declaration_panel(user_id: int) -> None:
                 st.rerun(scope="fragment")
 
 
-@st.fragment
+@st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_bank_market_trade_panel(user_id: int) -> None:
     with st.container(border=True):
         st.subheader("Market trade")
