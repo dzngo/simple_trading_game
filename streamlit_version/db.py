@@ -64,6 +64,20 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO game_session_states (game_session_id, version, updated_at)
+                SELECT id, 1, CURRENT_TIMESTAMP
+                FROM game_sessions
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM game_session_states
+                    WHERE game_session_states.game_session_id = game_sessions.id
+                )
+                """
+            )
+        )
         if not DATABASE_URL.startswith("sqlite"):
             return
         order_columns = {
@@ -82,6 +96,7 @@ def reset_db() -> None:
         "options",
         "participant_emails",
         "participants",
+        "game_session_states",
         "game_sessions",
         "products",
         "users",

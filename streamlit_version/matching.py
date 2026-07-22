@@ -2,6 +2,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from models import GameSession, MarketPrice, Option, Order, Trade, User
+from state import bump_session_version
 
 
 def normalize_price(price: float) -> float:
@@ -96,6 +97,7 @@ def create_trade_declaration(
         compatible_order.status = "Matched"
         session.add(trade)
         session.flush()
+        bump_session_version(session, game_session_id)
         return order, trade
 
     if reciprocal_orders:
@@ -106,6 +108,7 @@ def create_trade_declaration(
         refused_peer.paired_order_id = order.id
         session.flush()
 
+    bump_session_version(session, game_session_id)
     return order, None
 
 
@@ -150,4 +153,5 @@ def create_market_trade(session: Session, game_session_id: int, bank_id: int, op
 
     session.add(trade)
     session.flush()
+    bump_session_version(session, game_session_id)
     return trade

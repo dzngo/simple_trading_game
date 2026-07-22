@@ -3,22 +3,17 @@ import streamlit as st
 from analytics import (
     active_options,
     market_price_for_option,
-    market_prices_df,
     option_label,
-    orders_df,
-    trades_df,
     users_by_role,
 )
 from db import get_session
 from matching import create_market_trade, create_trade_declaration
+from snapshots import bank_live_snapshot
+from state import current_session_version
 from ui import (
     AUTO_REFRESH_INTERVAL,
     auto_refresh_caption,
-    infer_refusal_reasons,
     inject_app_styles,
-    matched_trades_df,
-    pending_trades_df,
-    refused_transactions_df,
     render_trade_status_panel,
     require_login,
     show_table,
@@ -46,38 +41,27 @@ def format_market_trade_confirmation(trade_id: int, option_text: str, side: str,
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_bank_live_panel(user_id: int) -> None:
-    with get_session() as session:
-        option_options = active_options(session, GAME_SESSION_ID)
-        company_options = users_by_role(session, "Company", GAME_SESSION_ID)
-        market_prices = market_prices_df(session, GAME_SESSION_ID)
-        orders = orders_df(session, GAME_SESSION_ID, user_id=user_id)
-        orders_with_reasons = infer_refusal_reasons(orders)
-        pending = pending_trades_df(orders_with_reasons)
-        refused = refused_transactions_df(orders_with_reasons)
-        trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Client-Bank")
-        matched = matched_trades_df(trades, user.username)
-        market_trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Market")
-        market_history = matched_trades_df(market_trades, user.username)
+    snapshot = bank_live_snapshot(GAME_SESSION_ID, user_id, user.username, current_session_version(GAME_SESSION_ID))
 
     auto_refresh_caption()
-    render_trade_status_panel(orders, user_id)
+    render_trade_status_panel(snapshot["orders"], user_id)
 
-    st.caption(f"{len(option_options)} active options | {len(company_options)} companies")
+    st.caption(f"{snapshot['option_count']} active options | {snapshot['company_count']} companies")
 
     st.subheader("Market prices")
-    show_table(market_prices, "No market prices configured.")
+    show_table(snapshot["market_prices"], "No market prices configured.")
 
     st.subheader("Pending trades")
-    show_table(pending, "No pending trades.")
+    show_table(snapshot["pending"], "No pending trades.")
 
     st.subheader("Matched trades")
-    show_table(matched, "No matched trades yet.")
+    show_table(snapshot["matched"], "No matched trades yet.")
 
     with st.expander("Market trades history"):
-        show_table(market_history, "No market trades yet.")
+        show_table(snapshot["market_history"], "No market trades yet.")
 
     with st.expander("Refused transactions"):
-        show_table(refused, "No refused transactions.")
+        show_table(snapshot["refused"], "No refused transactions.")
 
 
 st.title("Bank desk")

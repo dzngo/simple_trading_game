@@ -13,6 +13,7 @@ from session_manager import (
     professor_participants_for_email,
     valid_email,
 )
+from state import bump_session_version
 from ui import inject_app_styles
 
 st.set_page_config(page_title="Trading Game", page_icon="chart_with_upwards_trend", layout="wide")
@@ -81,6 +82,7 @@ def professor_for_bootstrap_email(session, email: str) -> User:
     if email not in existing_emails:
         professor.emails.append(ParticipantEmail(email=email))
         session.flush()
+        bump_session_version(session, game_session.id)
     return professor
 
 
@@ -178,6 +180,7 @@ def render_professor_login() -> None:
                 target_professor = participants_for_session(session, first_session.id, "Professor")[0]
                 target_professor.emails.append(ParticipantEmail(email=normalized))
                 session.flush()
+                bump_session_version(session, first_session.id)
 
         if target_professor is not None:
             sign_in(target_professor, professor_authenticated=True)

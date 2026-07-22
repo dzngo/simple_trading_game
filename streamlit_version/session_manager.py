@@ -16,6 +16,7 @@ from models import (
     ParticipantEmail,
     Trade,
 )
+from state import bump_session_version, create_session_state
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -91,6 +92,7 @@ def create_game_session(session: Session, name: str) -> GameSession:
     professor = Participant(game_session_id=game_session.id, username="Professor", role="Professor")
     session.add(professor)
     session.flush()
+    create_session_state(session, game_session.id)
     return game_session
 
 
@@ -116,6 +118,7 @@ def add_participant(session: Session, game_session_id: int, role: str) -> Partic
     )
     session.add(participant)
     session.flush()
+    bump_session_version(session, game_session_id)
     return participant
 
 
@@ -125,15 +128,21 @@ def remove_participant(session: Session, participant_id: int) -> None:
         return
     if participant.game_session.status != "preparation":
         raise ValueError("Participants can only be removed during Preparation.")
+    game_session_id = participant.game_session_id
     session.delete(participant)
     session.flush()
+    bump_session_version(session, game_session_id)
 
 
 def set_participant_emails(session: Session, participant: Participant, emails: list[str]) -> None:
+    previous = [participant_email.email for participant_email in participant.emails]
+    if previous == emails:
+        return
     participant.emails.clear()
     session.flush()
     for email in emails:
         participant.emails.append(ParticipantEmail(email=email))
+    bump_session_version(session, participant.game_session_id)
 
 
 def participants_for_session(session: Session, game_session_id: int, role: str | None = None) -> list[Participant]:
@@ -212,6 +221,7 @@ def start_session(session: Session, game_session_id: int) -> list[str]:
     game_session.status = "live"
     game_session.started_at = datetime.utcnow()
     session.flush()
+    bump_session_version(session, game_session_id)
     return []
 
 
@@ -224,6 +234,7 @@ def close_session(session: Session, game_session_id: int) -> None:
     game_session.status = "closed"
     game_session.closed_at = datetime.utcnow()
     session.flush()
+    bump_session_version(session, game_session_id)
 
 
 def delete_preparation_session(session: Session, game_session_id: int) -> None:
@@ -232,6 +243,9 @@ def delete_preparation_session(session: Session, game_session_id: int) -> None:
         return
     if game_session.status != "preparation":
         raise ValueError("Only Preparation sessions can be deleted.")
+    state = game_session.state
+    if state is not None:
+        session.delete(state)
     session.delete(game_session)
     session.flush()
 

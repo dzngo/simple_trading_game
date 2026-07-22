@@ -3,14 +3,10 @@ import streamlit as st
 from sqlalchemy import select
 
 from analytics import (
-    cumulative_pnl_history_df,
     option_label,
     client_bank_trades_for_group,
     payoff_curve_df,
-    pnl_df,
     selected_trade_totals,
-    trades_df,
-    orders_df,
     users_by_role,
 )
 from db import get_session
@@ -18,10 +14,11 @@ from exports import export_workbook_bytes, payoff_graph_zip_bytes, safe_filename
 from matching import normalize_price
 from models import GameSession, MarketPrice, MarketPriceDraft, Option
 from session_manager import status_label
+from snapshots import professor_pnl_snapshot, professor_trade_history_snapshot
+from state import bump_session_version, current_session_version
 from ui import (
     AUTO_REFRESH_INTERVAL,
     auto_refresh_caption,
-    infer_refusal_reasons,
     inject_app_styles,
     require_login,
     show_table,
@@ -211,6 +208,7 @@ def apply_catalog_update(session, rows: list[dict], target_count: int) -> None:
         option.market_price_draft.draft_bid_price = normalize_price(row["Draft Bid"])
         option.market_price_draft.draft_ask_price = normalize_price(row["Draft Ask"])
     session.flush()
+    bump_session_version(session, GAME_SESSION_ID)
 
 
 def publish_market_prices() -> tuple[bool, str]:
@@ -228,6 +226,7 @@ def publish_market_prices() -> tuple[bool, str]:
             ensure_market_rows(session, option)
             option.market_price.bid_price = normalize_price(row["Draft Bid"])
             option.market_price.ask_price = normalize_price(row["Draft Ask"])
+        bump_session_version(session, GAME_SESSION_ID)
     return True, "Market prices adjusted."
 
 
@@ -345,12 +344,12 @@ def render_refusal_cases(refused_orders: pd.DataFrame) -> None:
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_trade_history() -> None:
-    with get_session() as session:
-        all_orders = infer_refusal_reasons(orders_df(session, GAME_SESSION_ID))
-        pending_orders = orders_df(session, GAME_SESSION_ID, status="Pending")
-        refused_orders = infer_refusal_reasons(orders_df(session, GAME_SESSION_ID, status="Refused"))
-        client_bank_trades = trades_df(session, GAME_SESSION_ID, source="Client-Bank")
-        market_trades = trades_df(session, GAME_SESSION_ID, source="Market")
+    snapshot = professor_trade_history_snapshot(GAME_SESSION_ID, current_session_version(GAME_SESSION_ID))
+    all_orders = snapshot["all_orders"]
+    pending_orders = snapshot["pending_orders"]
+    refused_orders = snapshot["refused_orders"]
+    client_bank_trades = snapshot["client_bank_trades"]
+    market_trades = snapshot["market_trades"]
 
     auto_refresh_caption()
     with st.container(border=True):
@@ -381,9 +380,9 @@ def render_professor_analytics() -> None:
     if not st.toggle("Cash balance analytics", key="show_cash_balance_analytics"):
         return
 
-    with get_session() as session:
-        pnl = pnl_df(session, GAME_SESSION_ID)
-        pnl_history = cumulative_pnl_history_df(session, GAME_SESSION_ID)
+    snapshot = professor_pnl_snapshot(GAME_SESSION_ID, current_session_version(GAME_SESSION_ID))
+    pnl = snapshot["pnl"]
+    pnl_history = snapshot["pnl_history"]
 
     if pnl_history.empty:
         st.info("No trades yet. Cash balance chart will appear after the first trade.")

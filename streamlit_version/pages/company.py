@@ -1,16 +1,14 @@
 import streamlit as st
 
-from analytics import active_options, option_label, options_df, orders_df, trades_df, users_by_role
+from analytics import active_options, option_label, users_by_role
 from db import get_session
 from matching import create_trade_declaration
+from snapshots import company_live_snapshot
+from state import current_session_version
 from ui import (
     AUTO_REFRESH_INTERVAL,
     auto_refresh_caption,
-    infer_refusal_reasons,
     inject_app_styles,
-    matched_trades_df,
-    pending_trades_df,
-    refused_transactions_df,
     render_trade_status_panel,
     require_login,
     show_table,
@@ -27,33 +25,24 @@ GAME_SESSION_ID = int(st.session_state["game_session_id"])
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_company_live_panel(user_id: int) -> None:
-    with get_session() as session:
-        option_options = active_options(session, GAME_SESSION_ID)
-        bank_options = users_by_role(session, "Bank", GAME_SESSION_ID)
-        visible_options = options_df(session, GAME_SESSION_ID, include_market=False)
-        orders = orders_df(session, GAME_SESSION_ID, user_id=user_id)
-        orders_with_reasons = infer_refusal_reasons(orders)
-        pending = pending_trades_df(orders_with_reasons)
-        refused = refused_transactions_df(orders_with_reasons)
-        trades = trades_df(session, GAME_SESSION_ID, user_id=user_id, source="Client-Bank")
-        matched = matched_trades_df(trades, user.username)
+    snapshot = company_live_snapshot(GAME_SESSION_ID, user_id, user.username, current_session_version(GAME_SESSION_ID))
 
     auto_refresh_caption()
-    render_trade_status_panel(orders, user_id)
+    render_trade_status_panel(snapshot["orders"], user_id)
 
-    st.caption(f"{len(option_options)} active options | {len(bank_options)} available banks")
+    st.caption(f"{snapshot['option_count']} active options | {snapshot['bank_count']} available banks")
 
     st.subheader("Available options")
-    show_table(visible_options, "No active options configured.", hide_id=False)
+    show_table(snapshot["visible_options"], "No active options configured.", hide_id=False)
 
     st.subheader("Pending trades")
-    show_table(pending, "No pending trades.")
+    show_table(snapshot["pending"], "No pending trades.")
 
     st.subheader("Matched trades")
-    show_table(matched, "No matched trades yet.")
+    show_table(snapshot["matched"], "No matched trades yet.")
 
     with st.expander("Refused transactions"):
-        show_table(refused, "No refused transactions.")
+        show_table(snapshot["refused"], "No refused transactions.")
 
 
 st.title("Company desk")

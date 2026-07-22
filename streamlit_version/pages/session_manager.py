@@ -20,6 +20,7 @@ from session_manager import (
     status_label,
     validate_session_setup,
 )
+from state import bump_session_version
 from ui import inject_app_styles, require_login, show_user_sidebar
 
 
@@ -138,6 +139,7 @@ def save_option_rows(session, game_session_id: int, rows: list[dict]) -> None:
         if option_id not in kept_ids:
             option.is_active = False
     session.flush()
+    bump_session_version(session, game_session_id)
 
 
 def render_participant_cards(db_session, game_session: GameSession, role: str) -> None:
@@ -181,8 +183,12 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
                         disabled=game_session.status == "closed",
                         width="stretch",
                     ):
-                        participant.username = st.session_state[name_key].strip()
+                        new_name = st.session_state[name_key].strip()
+                        name_changed = new_name != participant.username
+                        participant.username = new_name
                         set_participant_emails(db_session, participant, parsed)
+                        if name_changed:
+                            bump_session_version(db_session, participant.game_session_id)
                         st.toast("Participant saved.")
                         st.rerun()
                     if controls[1].button(
@@ -351,6 +357,7 @@ with get_session() as db_session:
         new_session_name = header_left.text_input("Selected session name", value=selected_session.name)
         if new_session_name.strip() != selected_session.name:
             selected_session.name = new_session_name.strip()
+            bump_session_version(db_session, selected_session.id)
     else:
         header_left.subheader(selected_session.name)
     header_right.badge(status_label(selected_session.status))

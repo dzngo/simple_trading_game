@@ -26,6 +26,26 @@ class GameSession(Base):
         back_populates="game_session",
         cascade="all, delete-orphan",
     )
+    state: Mapped["GameSessionState"] = relationship(
+        back_populates="game_session",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class GameSessionState(Base):
+    __tablename__ = "game_session_states"
+
+    game_session_id: Mapped[int] = mapped_column(ForeignKey("game_sessions.id"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    game_session: Mapped[GameSession] = relationship(back_populates="state")
 
 
 class Participant(Base):
