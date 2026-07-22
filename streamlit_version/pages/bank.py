@@ -45,6 +45,10 @@ def format_market_trade_confirmation(trade_id: int, option_text: str, side: str,
     return f"Trade #{trade_id}: {side} {option_text} {direction} at € {price:.1f} at {executed_at}."
 
 
+def mark_market_trade_local_change() -> None:
+    st.session_state["bank_market_trade_skip_price_refresh"] = True
+
+
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
 def render_bank_live_panel(user_id: int) -> None:
     snapshot = bank_live_snapshot(GAME_SESSION_ID, user_id, user.username, current_session_version(GAME_SESSION_ID))
@@ -126,21 +130,33 @@ def render_bank_market_trade_panel(user_id: int) -> None:
             st.success(market_confirmation, icon=":material/check_circle:")
 
         options_key = f"bank_market_trade_options_{GAME_SESSION_ID}"
-        st.session_state[options_key] = load_market_trade_options()
+        skip_refresh = st.session_state.pop("bank_market_trade_skip_price_refresh", False)
+        if options_key not in st.session_state or not skip_refresh:
+            st.session_state[options_key] = load_market_trade_options()
         option_options = st.session_state[options_key]
 
         if not option_options:
             st.info("No active options configured.")
         else:
+            option_ids = [option["id"] for option in option_options]
+            if st.session_state.get("market_option") not in option_ids:
+                st.session_state["market_option"] = option_ids[0]
             market_option_id = st.selectbox(
                 "Market option",
-                [option["id"] for option in option_options],
+                option_ids,
                 format_func=lambda option_id: next(
                     option["label"] for option in option_options if option["id"] == option_id
                 ),
                 key="market_option",
+                on_change=mark_market_trade_local_change,
             )
-            market_side = st.segmented_control("Market side", ["Buy", "Sell"], default="Buy", key="market_side")
+            market_side = st.segmented_control(
+                "Market side",
+                ["Buy", "Sell"],
+                default="Buy",
+                key="market_side",
+                on_change=mark_market_trade_local_change,
+            )
             market_option = next(option for option in option_options if option["id"] == market_option_id)
             execution_price = market_option["ask"] if market_side == "Buy" else market_option["bid"]
             st.metric("Execution Price", f"{execution_price:.1f}")
