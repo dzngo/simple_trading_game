@@ -11,7 +11,6 @@ os.environ.setdefault("XDG_CACHE_HOME", "/tmp/trading-game-cache")
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 Path(os.environ["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -102,12 +101,15 @@ def export_workbook_bytes(session: Session, game_session_id: int) -> bytes:
 
 
 def payoff_graph_zip_bytes(session: Session, game_session_id: int) -> bytes:
+    import matplotlib.pyplot as plt
+
     participants = session.scalars(
         select(User)
         .where(User.game_session_id == game_session_id, User.role.in_(["Company", "Bank"]))
         .order_by(User.role, User.username)
     ).all()
     output = BytesIO()
+    wrote_graph = False
     with ZipFile(output, mode="w", compression=ZIP_DEFLATED) as archive:
         for participant in participants:
             trades = client_bank_trades_for_group(session, game_session_id, participant.id)
@@ -138,4 +140,7 @@ def payoff_graph_zip_bytes(session: Session, game_session_id: int) -> bytes:
                     f"{safe_filename(underlying)}_payoff.png"
                 )
                 archive.writestr(filename, image_bytes)
+                wrote_graph = True
+    if not wrote_graph:
+        return b""
     return output.getvalue()

@@ -1,5 +1,4 @@
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 from sqlalchemy import select
 
@@ -377,26 +376,30 @@ def render_trade_history() -> None:
             render_refusal_cases(refused_orders)
 
 
-@st.fragment(run_every=AUTO_REFRESH_INTERVAL)
+@st.fragment
 def render_professor_analytics() -> None:
+    if not st.toggle("Cash balance analytics", key="show_cash_balance_analytics"):
+        return
+
     with get_session() as session:
         pnl = pnl_df(session, GAME_SESSION_ID)
         pnl_history = cumulative_pnl_history_df(session, GAME_SESSION_ID)
 
-    with st.expander("Cash balance analytics"):
-        if pnl_history.empty:
-            st.info("No trades yet. Cash balance chart will appear after the first trade.")
-        else:
-            fig = px.line(
-                pnl_history,
-                x="Trade ID",
-                y="Cumulative P/L",
-                color="Participant",
-                markers=True,
-            )
-            fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=360)
-            st.plotly_chart(fig, width="stretch")
-        show_table(pnl, "No participants found.")
+    if pnl_history.empty:
+        st.info("No trades yet. Cash balance chart will appear after the first trade.")
+    else:
+        import plotly.express as px
+
+        fig = px.line(
+            pnl_history,
+            x="Trade ID",
+            y="Cumulative P/L",
+            color="Participant",
+            markers=True,
+        )
+        fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=360)
+        st.plotly_chart(fig, width="stretch")
+    show_table(pnl, "No participants found.")
 
 
 def render_option_setup() -> None:
@@ -570,6 +573,8 @@ def render_group_payoff_summary() -> None:
     if curve.empty:
         st.info("Select at least one trade to show the payoff graph.")
     else:
+        import plotly.express as px
+
         fig = px.line(
             curve,
             x="x",
@@ -585,9 +590,25 @@ def render_exports(selected_session: GameSession | None) -> None:
     with st.container(border=True):
         st.subheader("Exports")
         export_cols = st.columns(2)
-        try:
-            with get_session() as session:
-                workbook = export_workbook_bytes(session, GAME_SESSION_ID)
+
+        workbook_key = f"excel_export_bytes_{GAME_SESSION_ID}"
+        graph_zip_key = f"payoff_graph_zip_bytes_{GAME_SESSION_ID}"
+
+        if export_cols[0].button(
+            "Prepare Excel workbook",
+            icon=":material/table:",
+            width="stretch",
+            key=f"prepare_excel_export_{GAME_SESSION_ID}",
+        ):
+            try:
+                with get_session() as session:
+                    st.session_state[workbook_key] = export_workbook_bytes(session, GAME_SESSION_ID)
+            except Exception as exc:
+                st.session_state.pop(workbook_key, None)
+                export_cols[0].error(f"Workbook export unavailable: {exc}")
+
+        workbook = st.session_state.get(workbook_key)
+        if workbook:
             export_cols[0].download_button(
                 "Download Excel workbook",
                 data=workbook,
@@ -595,12 +616,22 @@ def render_exports(selected_session: GameSession | None) -> None:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
             )
-        except Exception as exc:
-            export_cols[0].error(f"Workbook export unavailable: {exc}")
 
-        try:
-            with get_session() as session:
-                graph_zip = payoff_graph_zip_bytes(session, GAME_SESSION_ID)
+        if export_cols[1].button(
+            "Prepare payoff graphs",
+            icon=":material/area_chart:",
+            width="stretch",
+            key=f"prepare_graph_export_{GAME_SESSION_ID}",
+        ):
+            try:
+                with get_session() as session:
+                    st.session_state[graph_zip_key] = payoff_graph_zip_bytes(session, GAME_SESSION_ID)
+            except Exception as exc:
+                st.session_state.pop(graph_zip_key, None)
+                export_cols[1].error(f"Payoff graph export unavailable: {exc}")
+
+        graph_zip = st.session_state.get(graph_zip_key)
+        if graph_zip is not None:
             if graph_zip:
                 export_cols[1].download_button(
                     "Download payoff graphs",
@@ -611,8 +642,6 @@ def render_exports(selected_session: GameSession | None) -> None:
                 )
             else:
                 export_cols[1].caption("No payoff graphs available yet.")
-        except Exception as exc:
-            export_cols[1].error(f"Payoff graph export unavailable: {exc}")
 
 
 with get_session() as session:

@@ -4,7 +4,7 @@ from db import get_session
 from models import GameSession, User
 from session_manager import status_label
 
-AUTO_REFRESH_SECONDS = 1
+AUTO_REFRESH_SECONDS = 3
 AUTO_REFRESH_INTERVAL = f"{AUTO_REFRESH_SECONDS}s"
 
 

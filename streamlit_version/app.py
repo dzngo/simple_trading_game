@@ -17,7 +17,14 @@ from ui import inject_app_styles
 
 st.set_page_config(page_title="Trading Game", page_icon="chart_with_upwards_trend", layout="wide")
 
-init_db()
+
+@st.cache_resource(show_spinner=False)
+def ensure_database_initialized() -> bool:
+    init_db()
+    return True
+
+
+ensure_database_initialized()
 inject_app_styles()
 
 ROLE_PAGES = {
@@ -188,7 +195,6 @@ def render_access_choice() -> str | None:
             width="stretch",
         ):
             st.session_state["access_path"] = "Student"
-            st.rerun()
     with professor_col:
         if st.button(
             "Professor",
@@ -197,7 +203,6 @@ def render_access_choice() -> str | None:
             width="stretch",
         ):
             st.session_state["access_path"] = "Professor"
-            st.rerun()
     return st.session_state.get("access_path")
 
 
