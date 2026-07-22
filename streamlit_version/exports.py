@@ -25,7 +25,21 @@ from analytics import (
     trades_df,
 )
 from models import GameSession, Participant, ParticipantEmail, User
-from session_manager import participants_for_session, status_label
+from session_services import participants_for_session, status_label
+
+
+def export_vocabulary_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    output = df.copy()
+    if "Status" in output.columns:
+        output["Status"] = output["Status"].replace({"Rejected": "Rejected"})
+    if "Source" in output.columns:
+        output["Source"] = output["Source"].replace({"Client-Bank": "Company-Bank"})
+    if "Refusal Reason" in output.columns:
+        output = output.rename(columns={"Refusal Reason": "Issue"})
+        output["Issue"] = output["Issue"].replace("", "Entered terms did not match")
+    return output
 
 
 def safe_filename(value: str) -> str:
@@ -72,29 +86,29 @@ def export_workbook_bytes(session: Session, game_session_id: int) -> bytes:
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         session_summary_df(game_session).to_excel(writer, sheet_name="Session", index=False)
         participants_df(session, game_session_id).to_excel(writer, sheet_name="Participants", index=False)
-        market_prices_df(session, game_session_id, include_drafts=False).to_excel(
+        export_vocabulary_df(market_prices_df(session, game_session_id, include_drafts=False)).to_excel(
             writer,
             sheet_name="Options",
             index=False,
         )
-        trades_df(session, game_session_id, source="Client-Bank").to_excel(
+        export_vocabulary_df(trades_df(session, game_session_id, source="Client-Bank")).to_excel(
             writer,
             sheet_name="Company-Bank Trades",
             index=False,
         )
-        trades_df(session, game_session_id, source="Market").to_excel(
+        export_vocabulary_df(trades_df(session, game_session_id, source="Market")).to_excel(
             writer,
             sheet_name="Market Trades",
             index=False,
         )
-        orders_df(session, game_session_id, status="Pending").to_excel(
+        export_vocabulary_df(orders_df(session, game_session_id, status="Pending")).to_excel(
             writer,
             sheet_name="Pending Declarations",
             index=False,
         )
-        orders_df(session, game_session_id, status="Refused").to_excel(
+        export_vocabulary_df(orders_df(session, game_session_id, status="Rejected")).to_excel(
             writer,
-            sheet_name="Refused Diagnostics",
+            sheet_name="Rejected Declarations",
             index=False,
         )
     return output.getvalue()
@@ -120,10 +134,7 @@ def payoff_graph_zip_bytes(session: Session, game_session_id: int) -> bytes:
                 if curve.empty:
                     continue
                 paid, received = selected_trade_totals(underlying_trades, participant.id)
-                title = (
-                    f"{participant.username} - {underlying} payoff "
-                    f"(paid {paid:.1f}, received {received:.1f})"
-                )
+                title = f"{participant.username} - {underlying} payoff " f"(paid {paid:.1f}, received {received:.1f})"
                 figure, axis = plt.subplots(figsize=(10, 6))
                 axis.plot(curve["x"], curve["Payoff"], marker="o", markersize=2, linewidth=1.8)
                 axis.axhline(0, color="#666666", linewidth=0.8)
@@ -135,10 +146,7 @@ def payoff_graph_zip_bytes(session: Session, game_session_id: int) -> bytes:
                 figure.savefig(image_output, format="png", dpi=150, bbox_inches="tight")
                 plt.close(figure)
                 image_bytes = image_output.getvalue()
-                filename = (
-                    f"{safe_filename(participant.username)}_"
-                    f"{safe_filename(underlying)}_payoff.png"
-                )
+                filename = f"{safe_filename(participant.username)}_" f"{safe_filename(underlying)}_payoff.png"
                 archive.writestr(filename, image_bytes)
                 wrote_graph = True
     if not wrote_graph:

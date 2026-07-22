@@ -13,7 +13,7 @@ from db import get_session
 from exports import export_workbook_bytes, payoff_graph_zip_bytes, safe_filename
 from matching import normalize_price
 from models import GameSession, MarketPrice, MarketPriceDraft, Option
-from session_manager import status_label
+from session_services import status_label
 from snapshots import professor_pnl_snapshot, professor_trade_history_snapshot
 from state import bump_session_version, current_session_version
 from ui import (
@@ -107,8 +107,8 @@ def option_setup_rows(session, display_count: int | None = None) -> pd.DataFrame
                 "Type": option.option_type,
                 "Underlying": option.underlying_asset,
                 "Strike": option.strike_price,
-                "Published Bid": option.market_price.bid_price,
-                "Published Ask": option.market_price.ask_price,
+                "Current Bid": option.market_price.bid_price,
+                "Current Ask": option.market_price.ask_price,
                 "Draft Bid": option.market_price_draft.draft_bid_price,
                 "Draft Ask": option.market_price_draft.draft_ask_price,
             }
@@ -120,8 +120,8 @@ def option_setup_rows(session, display_count: int | None = None) -> pd.DataFrame
                 "Type": "Call",
                 "Underlying": default_underlying(display_order),
                 "Strike": 100 + (display_order - 1) * 10,
-                "Published Bid": 9.0,
-                "Published Ask": 11.0,
+                "Current Bid": 9.0,
+                "Current Ask": 11.0,
                 "Draft Bid": 9.0,
                 "Draft Ask": 11.0,
             }
@@ -132,10 +132,10 @@ def option_setup_rows(session, display_count: int | None = None) -> pd.DataFrame
 def staged_market_change_count(rows: list[dict]) -> int:
     count = 0
     for row in rows:
-        if normalize_price(row["Published Bid"]) != normalize_price(row["Draft Bid"]):
+        if normalize_price(row["Current Bid"]) != normalize_price(row["Draft Bid"]):
             count += 1
             continue
-        if normalize_price(row["Published Ask"]) != normalize_price(row["Draft Ask"]):
+        if normalize_price(row["Current Ask"]) != normalize_price(row["Draft Ask"]):
             count += 1
     return count
 
@@ -203,8 +203,8 @@ def apply_catalog_update(session, rows: list[dict], target_count: int) -> None:
         option.underlying_asset = str(row["Underlying"]).strip()
         option.strike_price = int(row["Strike"])
         ensure_market_rows(session, option)
-        option.market_price.bid_price = normalize_price(row["Published Bid"])
-        option.market_price.ask_price = normalize_price(row["Published Ask"])
+        option.market_price.bid_price = normalize_price(row["Current Bid"])
+        option.market_price.ask_price = normalize_price(row["Current Ask"])
         option.market_price_draft.draft_bid_price = normalize_price(row["Draft Bid"])
         option.market_price_draft.draft_ask_price = normalize_price(row["Draft Ask"])
     session.flush()
@@ -239,7 +239,7 @@ def refusal_reason_for_pair(first, second) -> str:
         return "Price mismatch"
     if side_mismatch:
         return "Side mismatch"
-    return "Terms did not match"
+    return "Entered terms did not match"
 
 
 def stable_participants_label(rows) -> str:
@@ -251,11 +251,11 @@ def stable_participants_label(rows) -> str:
     return " ↔ ".join(sorted(names))
 
 
-def refusal_cases(refused_orders: pd.DataFrame) -> list[dict]:
-    if refused_orders.empty:
+def refusal_cases(rejected_orders: pd.DataFrame) -> list[dict]:
+    if rejected_orders.empty:
         return []
 
-    ordered = refused_orders.sort_values("Created", ascending=True).reset_index(drop=True)
+    ordered = rejected_orders.sort_values("Created", ascending=True).reset_index(drop=True)
     used_indexes = set()
     cases = []
 
@@ -282,7 +282,7 @@ def refusal_cases(refused_orders: pd.DataFrame) -> list[dict]:
 
         used_indexes.add(index)
         rows = [row]
-        reason = row.get("Refusal Reason", "Terms did not match")
+        reason = row.get("Refusal Reason", "Entered terms did not match")
         if pair_index is not None:
             used_indexes.add(pair_index)
             paired_row = ordered.loc[pair_index]
@@ -301,10 +301,10 @@ def refusal_cases(refused_orders: pd.DataFrame) -> list[dict]:
     return list(reversed(cases))
 
 
-def render_refusal_cases(refused_orders: pd.DataFrame) -> None:
-    cases = refusal_cases(refused_orders)
+def render_refusal_cases(rejected_orders: pd.DataFrame) -> None:
+    cases = refusal_cases(rejected_orders)
     if not cases:
-        st.caption("No refused declarations.")
+        st.caption("No rejected declarations.")
         return
 
     rows = []
@@ -339,7 +339,7 @@ def render_refusal_cases(refused_orders: pd.DataFrame) -> None:
             }
         )
 
-    show_table(pd.DataFrame(rows), "No refused declarations.", hide_id=False)
+    show_table(pd.DataFrame(rows), "No rejected declarations.", hide_id=False)
 
 
 @st.fragment(run_every=AUTO_REFRESH_INTERVAL)
@@ -347,7 +347,7 @@ def render_trade_history() -> None:
     snapshot = professor_trade_history_snapshot(GAME_SESSION_ID, current_session_version(GAME_SESSION_ID))
     all_orders = snapshot["all_orders"]
     pending_orders = snapshot["pending_orders"]
-    refused_orders = snapshot["refused_orders"]
+    rejected_orders = snapshot["rejected_orders"]
     client_bank_trades = snapshot["client_bank_trades"]
     market_trades = snapshot["market_trades"]
 
@@ -358,31 +358,29 @@ def render_trade_history() -> None:
             {
                 "Pending": len(pending_orders),
                 "Matched": int((all_orders["Status"] == "Matched").sum()) if not all_orders.empty else 0,
-                "Refused": len(refused_orders),
+                "Rejected": len(rejected_orders),
             }
         )
 
-        client_bank_tab, market_tab, all_tab = st.tabs(
-            ["Company-Bank trades", "Market trades", "All declarations"]
-        )
+        client_bank_tab, market_tab, all_tab = st.tabs(["Company-Bank trades", "Market trades", "All declarations"])
         with client_bank_tab:
-            show_table(client_bank_trades, "No client-bank trades matched yet.")
+            show_table(client_bank_trades, "No company-bank trades matched yet.")
         with market_tab:
-            show_table(market_trades, "No market transactions yet.")
+            show_table(market_trades, "No market trades yet.")
         with all_tab:
             show_table(all_orders, "No orders submitted yet.")
-        with st.expander("Diagnostics: refused declarations"):
-            render_refusal_cases(refused_orders)
+        with st.expander("Troubleshooting: rejected declarations"):
+            render_refusal_cases(rejected_orders)
 
 
 @st.fragment
 def render_professor_analytics() -> None:
-    if not st.toggle("Cash balance analytics", key="show_cash_balance_analytics"):
+    if not st.toggle("Cash balance", key="show_cash_balance_analytics"):
         return
 
     snapshot = professor_pnl_snapshot(GAME_SESSION_ID, current_session_version(GAME_SESSION_ID))
-    pnl = snapshot["pnl"]
-    pnl_history = snapshot["pnl_history"]
+    pnl = snapshot["pnl"].rename(columns={"Cumulative P/L": "Cash balance"})
+    pnl_history = snapshot["pnl_history"].rename(columns={"Cumulative P/L": "Cash balance"})
 
     if pnl_history.empty:
         st.info("No trades yet. Cash balance chart will appear after the first trade.")
@@ -392,7 +390,7 @@ def render_professor_analytics() -> None:
         fig = px.line(
             pnl_history,
             x="Trade ID",
-            y="Cumulative P/L",
+            y="Cash balance",
             color="Participant",
             markers=True,
         )
@@ -403,98 +401,51 @@ def render_professor_analytics() -> None:
 
 def render_option_setup() -> None:
     with st.container(border=True):
-        header_col, status_col = st.columns([3, 2], vertical_alignment="center")
-        header_col.subheader("Options and market prices")
+        st.subheader("Market prices")
+        st.caption("Modify the bid and ask values shown to banks during the live session.")
 
         with get_session() as session:
             game_session = session.get(GameSession, GAME_SESSION_ID)
-            definitions_locked = game_session.status != "preparation" if game_session is not None else True
             prices_locked = game_session.status != "live" if game_session is not None else True
-            current_count = len(active_options_for_setup(session))
-
-        if definitions_locked:
-            status_col.badge("Definitions locked", icon=":material/lock:", color="orange")
-        else:
-            status_col.badge("Definitions editable", icon=":material/edit:", color="green")
-
-        if "prof_option_count_draft" not in st.session_state:
-            st.session_state["prof_option_count_draft"] = max(current_count, 1)
-
-        count_col, note_col = st.columns([1, 3], vertical_alignment="bottom")
-        requested_count = count_col.number_input(
-            "Active options",
-            min_value=1,
-            max_value=20,
-            step=1,
-            disabled=definitions_locked,
-            key="prof_option_count_draft",
-        )
-        catalog_count_changed = int(requested_count) != current_count
-        if definitions_locked:
-            note_col.caption("Definitions and count are locked outside Preparation.")
-        elif catalog_count_changed:
-            note_col.warning(
-                f"Catalog update staged: desks still see {current_count} active option(s).",
-                icon=":material/pending:",
-            )
-        else:
-            note_col.caption("Edit option definitions and staged market prices in the table below.")
 
         with get_session() as session:
-            setup_df = option_setup_rows(
-                session,
-                display_count=int(requested_count) if not definitions_locked else None,
-            )
+            setup_df = option_setup_rows(session)
 
-        disabled_columns = ["ID", "Published Bid", "Published Ask"]
-        if definitions_locked:
-            disabled_columns.extend(["Type", "Underlying", "Strike"])
+        disabled_columns = ["ID", "Type", "Underlying", "Strike", "Current Bid", "Current Ask"]
+        if prices_locked:
+            disabled_columns.extend(["Draft Bid", "Draft Ask"])
 
         edited_df = st.data_editor(
             setup_df,
             key="prof_option_setup_editor",
             hide_index=True,
             width="stretch",
+            column_order=["Type", "Underlying", "Strike", "Current Bid", "Current Ask", "Draft Bid", "Draft Ask"],
             num_rows="fixed",
             disabled=disabled_columns,
             column_config={
-                "ID": st.column_config.TextColumn("ID", disabled=True),
+                "ID": None,
                 "Type": st.column_config.SelectboxColumn("Type", options=["Call", "Put"], required=True),
                 "Underlying": st.column_config.TextColumn("Underlying", max_chars=30, required=True),
                 "Strike": st.column_config.NumberColumn("Strike", min_value=1, step=1, format="%d"),
-                "Published Bid": st.column_config.NumberColumn("Published bid", format="€ %.1f"),
-                "Published Ask": st.column_config.NumberColumn("Published ask", format="€ %.1f"),
+                "Current Bid": st.column_config.NumberColumn("Current bid", format="€ %.1f"),
+                "Current Ask": st.column_config.NumberColumn("Current ask", format="€ %.1f"),
                 "Draft Bid": st.column_config.NumberColumn("New bid", min_value=0.1, step=0.1, format="€ %.1f"),
                 "Draft Ask": st.column_config.NumberColumn("New ask", min_value=0.1, step=0.1, format="€ %.1f"),
             },
         )
 
         rows = edited_df.to_dict("records")
-        errors = validate_setup_rows(rows, definitions_locked)
+        errors = validate_setup_rows(rows, definitions_locked=True)
         pending_changes = staged_market_change_count(rows) if not errors else 0
         if errors:
             st.error(errors[0], icon=":material/error:")
-        else:
+        elif not prices_locked:
             with get_session() as session:
-                apply_setup_rows(session, rows, definitions_locked)
-
-        if not definitions_locked and catalog_count_changed:
-            if st.button(
-                "Update option catalog",
-                type="primary",
-                icon=":material/sync:",
-                disabled=bool(errors),
-                width="stretch",
-            ):
-                with get_session() as session:
-                    apply_catalog_update(session, rows, int(requested_count))
-                st.toast("Option catalog updated.")
-                st.rerun()
+                apply_setup_rows(session, rows, definitions_locked=True)
 
         if errors:
-            st.caption("Fix the highlighted setup problem before publishing market prices.")
-        elif catalog_count_changed:
-            st.caption("Update the option catalog before publishing market price changes.")
+            st.caption("Fix the highlighted setup problem before updating market prices.")
         elif pending_changes:
             action_col, status_col = st.columns([1, 3], vertical_alignment="center")
             if action_col.button(
@@ -511,11 +462,13 @@ def render_option_setup() -> None:
                 else:
                     st.error(message, icon=":material/error:")
             status_col.warning(
-                f"{pending_changes} option price row(s) staged. Banks still see the published bid/ask.",
+                f"{pending_changes} option price row(s) staged. Banks still see the current bid/ask.",
                 icon=":material/pending:",
             )
+        elif prices_locked:
+            st.caption("Market prices are read-only because the session is closed.")
         else:
-            st.caption(":green[:material/check_circle: Published prices are up to date.]")
+            st.caption(":green[:material/check_circle: Current prices are up to date.]")
 
 
 def render_group_payoff_summary() -> None:
@@ -533,7 +486,7 @@ def render_group_payoff_summary() -> None:
         trades = client_bank_trades_for_group(session, GAME_SESSION_ID, selected_user.id)
 
     if not trades:
-        st.info("No matched client-bank trades for this group yet.")
+        st.info("No matched company-bank trades for this group yet.")
         return
 
     underlyings = sorted({trade.option.underlying_asset for trade in trades})

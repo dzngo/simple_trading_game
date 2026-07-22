@@ -87,8 +87,16 @@ class Option(Base):
     display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     game_session: Mapped[GameSession] = relationship(back_populates="options")
-    market_price: Mapped["MarketPrice"] = relationship(back_populates="option", uselist=False)
-    market_price_draft: Mapped["MarketPriceDraft"] = relationship(back_populates="option", uselist=False)
+    market_price: Mapped["MarketPrice"] = relationship(
+        back_populates="option",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    market_price_draft: Mapped["MarketPriceDraft"] = relationship(
+        back_populates="option",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
 
 class Order(Base):

@@ -1,22 +1,23 @@
 import os
 
+# pylint: disable=not-callable
+
 import streamlit as st
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from db import get_session, init_db
 from models import GameSession, ParticipantEmail, User
-from session_manager import (
+from session_services import (
     create_game_session,
     live_sessions_for_email,
     normalize_email,
     participants_for_session,
-    professor_participants_for_email,
     valid_email,
 )
 from state import bump_session_version
 from ui import inject_app_styles
 
-st.set_page_config(page_title="Trading Game", page_icon="chart_with_upwards_trend", layout="wide")
+st.set_page_config(page_title="Trading Game", page_icon="💰", layout="wide")
 
 
 @st.cache_resource(show_spinner=False)
@@ -25,7 +26,8 @@ def ensure_database_initialized() -> bool:
     return True
 
 
-ensure_database_initialized()
+with st.spinner("Game loading..."):
+    ensure_database_initialized()
 inject_app_styles()
 
 ROLE_PAGES = {
@@ -86,13 +88,19 @@ def professor_for_bootstrap_email(session, email: str) -> User:
     return professor
 
 
-def sign_in(participant: User, professor_authenticated: bool = False) -> None:
+def sign_in(participant: User, professor_authenticated: bool = False, login_email: str | None = None) -> None:
     st.session_state["user_id"] = participant.id
     st.session_state["role"] = participant.role
     st.session_state["game_session_id"] = participant.game_session_id
+    if login_email:
+        st.session_state["login_email"] = login_email
     if professor_authenticated:
         st.session_state["professor_authenticated"] = True
     st.switch_page(ROLE_PAGES[participant.role])
+
+
+def set_access_path(path: str) -> None:
+    st.session_state["access_path"] = path
 
 
 def render_student_login() -> None:
@@ -113,9 +121,10 @@ def render_student_login() -> None:
                 _, target_participant = matches[0]
             else:
                 st.session_state["student_login_matches"] = [participant.id for _, participant in matches]
+                st.session_state["student_login_email"] = normalized
                 st.rerun()
         if target_participant is not None:
-            sign_in(target_participant)
+            sign_in(target_participant, login_email=normalized)
 
 
 def render_student_session_choice() -> None:
@@ -141,7 +150,7 @@ def render_student_session_choice() -> None:
         format_func=lambda item: labels[item.id],
     )
     if st.button("Continue", type="primary", width="stretch"):
-        sign_in(selected)
+        sign_in(selected, login_email=st.session_state.get("student_login_email"))
 
 
 def render_professor_login() -> None:
@@ -162,28 +171,16 @@ def render_professor_login() -> None:
         if password != configured_password:
             st.error("Professor password is incorrect.")
             return
+        if normalized not in configured_professor_emails():
+            st.error("This email is not authorized as a professor.")
+            return
 
         target_professor = None
         with get_session() as session:
-            professors = professor_participants_for_email(session, normalized)
-            if professors:
-                target_professor = professors[0]
-            elif normalized in configured_professor_emails():
-                target_professor = professor_for_bootstrap_email(session, normalized)
-            else:
-                session_count = session.scalar(select(func.count(GameSession.id))) or 0
-                if session_count:
-                    st.error("This email is not authorized as a professor.")
-                    return
-
-                first_session = create_game_session(session, "First Session")
-                target_professor = participants_for_session(session, first_session.id, "Professor")[0]
-                target_professor.emails.append(ParticipantEmail(email=normalized))
-                session.flush()
-                bump_session_version(session, first_session.id)
+            target_professor = professor_for_bootstrap_email(session, normalized)
 
         if target_professor is not None:
-            sign_in(target_professor, professor_authenticated=True)
+            sign_in(target_professor, professor_authenticated=True, login_email=normalized)
 
 
 def render_access_choice() -> str | None:
@@ -191,21 +188,23 @@ def render_access_choice() -> str | None:
     student_col, professor_col = st.columns(2, gap="small")
     selected_path = st.session_state.get("access_path")
     with student_col:
-        if st.button(
+        st.button(
             "Student",
             icon=":material/school:",
             type="primary" if selected_path == "Student" else "secondary",
             width="stretch",
-        ):
-            st.session_state["access_path"] = "Student"
+            on_click=set_access_path,
+            args=("Student",),
+        )
     with professor_col:
-        if st.button(
+        st.button(
             "Professor",
             icon=":material/admin_panel_settings:",
             type="primary" if selected_path == "Professor" else "secondary",
             width="stretch",
-        ):
-            st.session_state["access_path"] = "Professor"
+            on_click=set_access_path,
+            args=("Professor",),
+        )
     return st.session_state.get("access_path")
 
 

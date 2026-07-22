@@ -1,6 +1,6 @@
 # Options Trading Game - Streamlit Version
 
-A lightweight Streamlit MVP for a university finance course. Students play as companies or banks, while a professor supervises the game and controls option definitions and Market Prices.
+A lightweight Streamlit MVP for a university finance course. Students play as companies or banks, while a professor configures sessions, supervises the game, and controls market prices.
 
 The app intentionally avoids real option pricing, Greeks, implied volatility, exercise logic, and Black-Scholes. Options are classroom instruments with manually controlled bid/ask prices and simple payoff formulas for professor-facing analysis.
 
@@ -10,13 +10,13 @@ The app intentionally avoids real option pricing, Greeks, implied volatility, ex
 - Professor access by authorized email plus `PROFESSOR_PASSWORD`
 - Multiple independent game sessions
 - Session statuses: `Preparation`, `Live`, and `Closed`
-- Professor Session Manager for participants, emails, options, start/close, duplication, and draft deletion
+- Professor Session Manager for participants, student emails, options, start/close, duplication, and draft deletion
 - Company page for trade declarations with banks
 - Bank page for trade declarations with companies and direct market trades at professor-set bid/ask prices
-- Professor page for order/trade supervision, price configuration, payoff review, Excel export, and payoff graph ZIP export
+- Professor page for order/trade supervision, market price configuration, payoff review, Excel export, and payoff graph ZIP export
 - Neon Postgres persistence for deployment, with SQLite fallback for local development
 - Matching engine requiring compatible independent declarations
-- Refused status when reciprocal company-bank declarations disagree
+- Rejected status when reciprocal company-bank declarations disagree
 - Live dashboard sections refresh automatically every 5 seconds
 
 ## Refined Project Outline
@@ -35,11 +35,11 @@ Visibility rules:
 
 - Companies see only option type, underlying asset, and strike price.
 - Banks see option type, underlying asset, strike price, market ask, and market bid.
-- The professor sees and edits all fields.
+- The professor configures all option fields in Session Manager before the session starts.
 
 Market price updates should be staged. The professor can edit many bid/ask values without immediately changing bank screens. Pressing `Adjust market prices` publishes all valid changes together. Bid and ask must be positive, and ask must be strictly greater than bid. If any option is invalid, show an error and publish none of the staged changes.
 
-Option setup applies immediately before trading starts. Trading starts with the first submitted declaration. After that point, option definitions and active option count are locked, and only market bid/ask prices remain adjustable.
+Option setup applies in Session Manager before the session starts. After the session starts, option definitions and active option count are locked, and only market bid/ask prices remain adjustable from the Professor control room.
 
 The professor dashboard should also include a per-group trade summary:
 
@@ -105,12 +105,14 @@ PROFESSOR_PASSWORD = "change-this-password"
 PROFESSOR_EMAILS = ["professor@example.com"]
 ```
 
-Never commit secrets. To rotate the Neon credential, update `DATABASE_URL` in Streamlit secrets and restart the app. To change professor access, update `PROFESSOR_PASSWORD` and `PROFESSOR_EMAILS`.
+Never commit secrets. To rotate the Neon credential, update `DATABASE_URL` in Streamlit secrets and restart the app. Professor access is managed only through Streamlit secrets: update `PROFESSOR_PASSWORD` and `PROFESSOR_EMAILS`.
+
+For latency, create the Neon database in a US region, preferably US West/Oregon when available. Streamlit Community Cloud runs apps from the United States, and using a European Neon region adds a visible round trip on each trade declaration and database write.
 
 ## Session Statuses
 
 - `Preparation`: professor configures participants, emails, options, and market prices. Students cannot trade.
-- `Live`: students can trade. Professor can monitor trades, adjust market bid/ask prices, and fix authorized emails.
+- `Live`: students can trade. Professor can monitor trades and adjust market bid/ask prices.
 - `Closed`: session is read-only. Professor can review, export, and duplicate setup into a new Preparation session.
 
 ## Demo Users
@@ -138,9 +140,9 @@ A trade matches when two pending declarations have:
 - opposite sides
 - reciprocal counterparties
 
-If a reciprocal declaration exists for the same company, bank, and option but the side or price does not match, the new declaration and the oldest mismatched reciprocal declaration become `Refused`.
+If a reciprocal declaration exists for the same company, bank, and option but the side or price does not match, the new declaration and the oldest mismatched reciprocal declaration become `Rejected` in the UI.
 
-Company-bank declarations are hidden before matching. Companies and banks negotiate verbally outside the app, then independently enter the agreed terms. The app only validates whether those declarations match and shows an error/refusal if the entered terms differ.
+Company-bank declarations are hidden before matching. Companies and banks negotiate verbally outside the app, then independently enter the agreed terms. The app only validates whether those declarations match and shows a rejected declaration if the entered terms differ.
 
 Negotiated company-bank prices use one decimal place unless the professor later asks for a different precision. Matching requires exact equality at the app's displayed precision.
 
@@ -149,12 +151,12 @@ Professor-set Market Prices are visible to banks as quoting context.
 Market trading behavior:
 
 - Banks can trade directly with the market.
-- A bank buying from the market uses the selected option's published ask price.
-- A bank selling to the market uses the selected option's published bid price.
-- Banks cannot override the published market trade price.
+- A bank buying from the market uses the selected option's current ask price.
+- A bank selling to the market uses the selected option's current bid price.
+- Banks cannot override the current market trade price.
 - Market trades are validated immediately and do not require reciprocal counterparty declarations.
-- Market trades are stored and displayed to the professor in a separate `Market Transactions` table.
-- Market trades are included in professor cumulative P/L analytics.
+- Market trades are stored and displayed to the professor in a separate `Market trades` table.
+- Market trades are included in professor cash balance calculations.
 - Market trades are excluded from the selected group payoff summary.
 - Companies cannot trade directly with the market and cannot see market bid/ask prices.
 

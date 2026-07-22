@@ -153,7 +153,7 @@ Companies:
 - cannot trade directly with the market
 - do not see market bid/ask prices
 - do not see banks' hidden submitted declarations before a match or refusal
-- do not see global analytics
+- do not see professor analysis panels
 - do not see PnL graphs
 
 ---
@@ -192,7 +192,7 @@ If the bank sells to the market:
 - use the bid price
 
 Market trades should be instantly validated.
-Banks can only buy or sell options with the market at the professor-set published bid/ask price. They cannot override the market trade price.
+Banks can only buy or sell options with the market at the professor-set current bid/ask price. They cannot override the market trade price.
 
 ## Bank View
 
@@ -206,7 +206,7 @@ The bank page should display:
 
 Banks:
 - act as intermediaries / market makers
-- do not see global analytics
+- do not see professor analysis panels
 - do not see PnL graphs
 
 ---
@@ -219,7 +219,7 @@ The professor interface must allow:
 
 - View all submitted orders
 - View all matched trades
-- View market transactions in a separate table
+- View market trades in a separate table
 - View pending trades
 - View unmatched/mismatched trades
 
@@ -231,11 +231,11 @@ The professor interface must allow:
   - market ask price
   - market bid price
 
-- Stage market price changes before publishing:
+- Stage market price changes before applying:
   - the professor can edit many bid/ask values on screen
-  - banks should continue seeing the last published prices while the professor is editing
-  - pressing an `Adjust market prices` button publishes all valid staged price changes together
-  - publishing fails with an error if any option has non-positive prices or ask price less than or equal to bid price
+  - banks should continue seeing the current prices while the professor is editing
+  - pressing an `Adjust market prices` button applies all valid staged price changes together
+  - updating fails with an error if any option has non-positive prices or ask price less than or equal to bid price
 
 - Visualize cumulative gains/losses using graphs
   - include both company-bank trades and bank-market trades
@@ -259,9 +259,9 @@ Use Plotly to display:
 - simple trading activity charts
 - payoff curve for the professor-selected trades of one group
 
-The professor page is the ONLY page showing global analytics and profit/loss graphs.
+The professor page is the ONLY page showing global review and payoff graphs.
 
-The cumulative profit/loss analytics include both:
+The optional cash balance view includes both:
 - company-bank trades
 - bank-market trades
 
@@ -300,7 +300,7 @@ If all conditions are met:
 - mark both orders as matched
 
 If a reciprocal declaration exists for the same option and counterparties but the side or price does not match:
-- mark the new declaration and the oldest mismatched reciprocal declaration as refused
+- mark the new declaration and the oldest mismatched reciprocal declaration as rejected
 - show an error message explaining that the company and bank entered incompatible terms
 - do not expose either side's hidden pending declaration terms as negotiation tooling
 
@@ -323,19 +323,19 @@ Market trades should:
 - immediately create validated trades
 - not require counterpart matching
 
-If the bank buys from the market, the trade price is the option's published ask price.
+If the bank buys from the market, the trade price is the option's current ask price.
 
-If the bank sells to the market, the trade price is the option's published bid price.
+If the bank sells to the market, the trade price is the option's current bid price.
 
-Banks cannot override the published market trade price.
+Banks cannot override the current market trade price.
 
-Only published market prices are visible to banks and used for market trades. Draft edits on the professor page should not affect bank screens until `Adjust market prices` succeeds.
+Only current market prices are visible to banks and used for market trades. Draft edits on the professor page should not affect bank screens until `Adjust market prices` succeeds.
 
-Market transactions:
+Market trades:
 - are stored as trades with source `Market`
 - display the market side as `Market`
-- appear on the professor page in a separate `Market Transactions` table
-- are included in professor cumulative P/L analytics
+- appear on the professor page in a separate `Market trades` table
+- are included in professor cash balance calculations
 - are excluded from selected group payoff summaries
 
 # Suggested Database Schema
@@ -369,7 +369,7 @@ Market transactions:
 - buyer_id
 - seller_id
 - price
-- source: Client-Bank or Market
+- source: Company-Bank or Market in UI and exports
 - created_at
 
 For market trades, the market-side buyer or seller can be represented as nullable internally and displayed as `Market`.
@@ -469,19 +469,19 @@ The professor should be able to replace these with 1 to 20 active options.
 ## Market Trade
 
 1. Bank selects Buy or Sell
-2. Use published bid/ask market price for the selected option
+2. Use current bid/ask market price for the selected option
 3. Create Trade instantly
 
 ## Professor Price Adjustment
 
 1. Professor edits one or more draft bid/ask values.
-2. Banks continue seeing the last published values.
+2. Banks continue seeing the current values.
 3. Professor clicks `Adjust market prices`.
 4. Validate every active option:
    - ask price must be strictly greater than bid price
    - prices must be numeric and positive
 5. If validation passes:
-   - publish all draft prices together
+   - apply all draft prices together
    - banks see the new prices
 6. If validation fails:
    - show an error identifying the invalid option
@@ -496,12 +496,12 @@ Generate:
 - seed/demo data
 - company-bank matching engine
 - market trade logic
-- professor analytics dashboard
+- professor review dashboard
 - professor option configuration panel
 - staged market price publishing with bid/ask validation
 - professor group trade summary with selected-trade price totals and payoff graph
-- separate professor market transactions table
-- cumulative P/L analytics including both company-bank and market trades
+- separate professor market trades table
+- cash balance calculations including both company-bank and market trades
 - README with setup instructions
 
 The application must run locally using:

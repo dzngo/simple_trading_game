@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pylint: disable=not-callable
+
 from datetime import datetime
 import re
 
@@ -168,8 +170,8 @@ def validate_session_setup(session: Session, game_session_id: int) -> list[str]:
         errors.append("Add at least one company.")
     if not banks:
         errors.append("Add at least one bank.")
-    if not professors or not any(professor.emails for professor in professors):
-        errors.append("Add at least one professor email.")
+    if not professors:
+        errors.append("Session needs a professor participant.")
 
     names_by_role = set()
     all_emails = {}
@@ -243,9 +245,6 @@ def delete_preparation_session(session: Session, game_session_id: int) -> None:
         return
     if game_session.status != "preparation":
         raise ValueError("Only Preparation sessions can be deleted.")
-    state = game_session.state
-    if state is not None:
-        session.delete(state)
     session.delete(game_session)
     session.flush()
 

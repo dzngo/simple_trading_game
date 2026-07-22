@@ -15,7 +15,7 @@ from ui import (
     infer_refusal_reasons,
     matched_trades_df,
     pending_trades_df,
-    refused_transactions_df,
+    rejected_transactions_df,
 )
 
 
@@ -28,7 +28,7 @@ def company_live_snapshot(game_session_id: int, user_id: int, username: str, ver
         orders = orders_df(session, game_session_id, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
         pending = pending_trades_df(orders_with_reasons)
-        refused = refused_transactions_df(orders_with_reasons)
+        rejected = rejected_transactions_df(orders_with_reasons)
         trades = trades_df(session, game_session_id, user_id=user_id, source="Client-Bank")
         matched = matched_trades_df(trades, username)
 
@@ -39,7 +39,7 @@ def company_live_snapshot(game_session_id: int, user_id: int, username: str, ver
         "orders": orders,
         "pending": pending,
         "matched": matched,
-        "refused": refused,
+        "rejected": rejected,
         "version": version,
     }
 
@@ -53,7 +53,7 @@ def bank_live_snapshot(game_session_id: int, user_id: int, username: str, versio
         orders = orders_df(session, game_session_id, user_id=user_id)
         orders_with_reasons = infer_refusal_reasons(orders)
         pending = pending_trades_df(orders_with_reasons)
-        refused = refused_transactions_df(orders_with_reasons)
+        rejected = rejected_transactions_df(orders_with_reasons)
         trades = trades_df(session, game_session_id, user_id=user_id, source="Client-Bank")
         matched = matched_trades_df(trades, username)
         market_trades = trades_df(session, game_session_id, user_id=user_id, source="Market")
@@ -67,7 +67,7 @@ def bank_live_snapshot(game_session_id: int, user_id: int, username: str, versio
         "pending": pending,
         "matched": matched,
         "market_history": market_history,
-        "refused": refused,
+        "rejected": rejected,
         "version": version,
     }
 
@@ -77,14 +77,14 @@ def professor_trade_history_snapshot(game_session_id: int, version: int) -> dict
     with get_session() as session:
         all_orders = infer_refusal_reasons(orders_df(session, game_session_id))
         pending_orders = orders_df(session, game_session_id, status="Pending")
-        refused_orders = infer_refusal_reasons(orders_df(session, game_session_id, status="Refused"))
+        rejected_orders = infer_refusal_reasons(orders_df(session, game_session_id, status="Rejected"))
         client_bank_trades = trades_df(session, game_session_id, source="Client-Bank")
         market_trades = trades_df(session, game_session_id, source="Market")
 
     return {
         "all_orders": all_orders,
         "pending_orders": pending_orders,
-        "refused_orders": refused_orders,
+        "rejected_orders": rejected_orders,
         "client_bank_trades": client_bank_trades,
         "market_trades": market_trades,
         "version": version,

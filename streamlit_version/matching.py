@@ -101,11 +101,11 @@ def create_trade_declaration(
         return order, trade
 
     if reciprocal_orders:
-        order.status = "Refused"
-        refused_peer = reciprocal_orders[0]
-        refused_peer.status = "Refused"
-        order.paired_order_id = refused_peer.id
-        refused_peer.paired_order_id = order.id
+        order.status = "Rejected"
+        rejected_peer = reciprocal_orders[0]
+        rejected_peer.status = "Rejected"
+        order.paired_order_id = rejected_peer.id
+        rejected_peer.paired_order_id = order.id
         session.flush()
 
     bump_session_version(session, game_session_id)
@@ -128,7 +128,7 @@ def create_market_trade(session: Session, game_session_id: int, bank_id: int, op
     if bank is None or bank.game_session_id != game_session_id or bank.role != "Bank":
         raise ValueError("Bank does not belong to this session.")
     if market_price is None:
-        raise ValueError("No published market price exists for this option.")
+        raise ValueError("No current market price exists for this option.")
 
     if side == "Buy":
         price = normalize_price(market_price.ask_price)

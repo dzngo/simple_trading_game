@@ -15,7 +15,6 @@ from ui import (
     show_user_sidebar,
 )
 
-
 st.set_page_config(page_title="Company", page_icon="office", layout="wide")
 
 inject_app_styles()
@@ -41,13 +40,13 @@ def render_company_live_panel(user_id: int) -> None:
     st.subheader("Matched trades")
     show_table(snapshot["matched"], "No matched trades yet.")
 
-    with st.expander("Refused transactions"):
-        show_table(snapshot["refused"], "No refused transactions.")
+    with st.expander("Rejected declarations"):
+        show_table(snapshot["rejected"], "No rejected declarations.")
 
 
 st.title("Company desk")
 st.markdown(
-    '<div class="role-strip">Submit negotiated trade declarations with banks and watch whether the bank confirms or refuses the same terms.</div>',
+    '<div class="role-strip">Submit negotiated trade declarations with banks and watch whether the bank confirms or rejects the same terms.</div>',
     unsafe_allow_html=True,
 )
 show_user_sidebar(user)
@@ -61,9 +60,14 @@ left, right = st.columns([1, 1.35], gap="large")
 with left:
     st.subheader("New trade declaration")
 
+    submitted = False
+    option = None
+    side = None
+    price = None
+    counterparty = None
+
     if not option_options or not bank_options:
         st.info("The professor must configure active options and banks before declarations can be submitted.")
-        submitted = False
     else:
         with st.form("company_trade_declaration"):
             option = st.selectbox("Option", option_options, format_func=option_label)
@@ -81,7 +85,7 @@ with left:
 with right:
     render_company_live_panel(user.id)
 
-if submitted:
+if submitted and option is not None and side is not None and price is not None and counterparty is not None:
     with get_session() as session:
         create_trade_declaration(
             session=session,

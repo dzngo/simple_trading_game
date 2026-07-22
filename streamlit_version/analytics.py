@@ -1,4 +1,7 @@
 import pandas as pd
+
+# pylint: disable=not-callable
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
@@ -8,9 +11,7 @@ from models import MarketPrice, Option, Order, Trade, User
 def users_by_role(session: Session, role: str, game_session_id: int) -> list[User]:
     return list(
         session.scalars(
-            select(User)
-            .where(User.role == role, User.game_session_id == game_session_id)
-            .order_by(User.username)
+            select(User).where(User.role == role, User.game_session_id == game_session_id).order_by(User.username)
         )
     )
 
@@ -74,12 +75,8 @@ def market_prices_df(session: Session, game_session_id: int, include_drafts: boo
             "Updated": option.market_price.updated_at if option.market_price else None,
         }
         if include_drafts:
-            row["Draft Bid"] = (
-                option.market_price_draft.draft_bid_price if option.market_price_draft else None
-            )
-            row["Draft Ask"] = (
-                option.market_price_draft.draft_ask_price if option.market_price_draft else None
-            )
+            row["Draft Bid"] = option.market_price_draft.draft_bid_price if option.market_price_draft else None
+            row["Draft Ask"] = option.market_price_draft.draft_ask_price if option.market_price_draft else None
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -149,14 +146,14 @@ def orders_df(
 
 def refusal_reasons_for_orders(session: Session, orders: list[Order]) -> dict[int, str]:
     reasons = {}
-    refused_orders = [order for order in orders if order.status == "Refused"]
-    for order in refused_orders:
+    rejected_orders = [order for order in orders if order.status == "Rejected"]
+    for order in rejected_orders:
         peer = session.get(Order, order.paired_order_id) if order.paired_order_id is not None else None
         if peer is None:
             peer = session.scalar(
                 select(Order)
                 .where(
-                    Order.status == "Refused",
+                    Order.status == "Rejected",
                     Order.option_id == order.option_id,
                     Order.user_id == order.counterparty_id,
                     Order.counterparty_id == order.user_id,
@@ -164,7 +161,7 @@ def refusal_reasons_for_orders(session: Session, orders: list[Order]) -> dict[in
                 .order_by(Order.created_at.desc())
             )
         if peer is None:
-            reasons[order.id] = "Terms did not match"
+            reasons[order.id] = "Entered terms did not match"
             continue
 
         price_mismatch = round(float(order.price), 1) != round(float(peer.price), 1)
@@ -176,7 +173,7 @@ def refusal_reasons_for_orders(session: Session, orders: list[Order]) -> dict[in
         elif side_mismatch:
             reasons[order.id] = "Side mismatch"
         else:
-            reasons[order.id] = "Terms did not match"
+            reasons[order.id] = "Entered terms did not match"
     return reasons
 
 
@@ -223,9 +220,7 @@ def trades_df(
 
 def pnl_df(session: Session, game_session_id: int) -> pd.DataFrame:
     users = session.scalars(
-        select(User)
-        .where(User.game_session_id == game_session_id, User.role != "Professor")
-        .order_by(User.username)
+        select(User).where(User.game_session_id == game_session_id, User.role != "Professor").order_by(User.username)
     ).all()
     balances = {user.id: {"Participant": user.username, "Cumulative P/L": 0.0} for user in users}
 
@@ -243,9 +238,7 @@ def pnl_df(session: Session, game_session_id: int) -> pd.DataFrame:
 
 def cumulative_pnl_history_df(session: Session, game_session_id: int) -> pd.DataFrame:
     users = session.scalars(
-        select(User)
-        .where(User.game_session_id == game_session_id, User.role != "Professor")
-        .order_by(User.username)
+        select(User).where(User.game_session_id == game_session_id, User.role != "Professor").order_by(User.username)
     ).all()
     balances = {user.id: 0.0 for user in users}
     names = {user.id: user.username for user in users}

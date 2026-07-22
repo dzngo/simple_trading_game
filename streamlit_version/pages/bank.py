@@ -20,7 +20,6 @@ from ui import (
     show_user_sidebar,
 )
 
-
 st.set_page_config(page_title="Bank", page_icon="bank", layout="wide")
 
 inject_app_styles()
@@ -60,8 +59,8 @@ def render_bank_live_panel(user_id: int) -> None:
     with st.expander("Market trades history"):
         show_table(snapshot["market_history"], "No market trades yet.")
 
-    with st.expander("Refused transactions"):
-        show_table(snapshot["refused"], "No refused transactions.")
+    with st.expander("Rejected declarations"):
+        show_table(snapshot["rejected"], "No rejected declarations.")
 
 
 st.title("Bank desk")
@@ -118,7 +117,7 @@ with left:
 
     with st.container(border=True):
         st.subheader("Market trade")
-        st.caption("Market trades execute immediately at the published professor-set bid/ask.")
+        st.caption("Market trades execute immediately at the current professor-set bid/ask.")
         market_confirmation = st.session_state.pop("market_trade_confirmation", None)
         if market_confirmation is not None:
             st.success(market_confirmation, icon=":material/check_circle:")
@@ -126,9 +125,7 @@ with left:
         if not option_options:
             st.info("No active options configured.")
         else:
-            market_option = st.selectbox(
-                "Market option", option_options, format_func=option_label, key="market_option"
-            )
+            market_option = st.selectbox("Market option", option_options, format_func=option_label, key="market_option")
             market_side = st.segmented_control("Market side", ["Buy", "Sell"], default="Buy", key="market_side")
             market_bid, market_ask = get_market_prices(market_option.id)
             execution_price = market_ask if market_side == "Buy" else market_bid

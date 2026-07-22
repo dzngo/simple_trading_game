@@ -2,10 +2,21 @@ import streamlit as st
 
 from db import get_session
 from models import GameSession, User
-from session_manager import status_label
+from session_services import status_label
 
 AUTO_REFRESH_SECONDS = 3
 AUTO_REFRESH_INTERVAL = f"{AUTO_REFRESH_SECONDS}s"
+
+STATUS_DISPLAY_LABELS = {
+    "Pending": "Pending",
+    "Matched": "Matched",
+    "Rejected": "Rejected",
+}
+
+SOURCE_DISPLAY_LABELS = {
+    "Client-Bank": "Company-Bank",
+    "Market": "Market",
+}
 
 
 def require_login(
@@ -57,20 +68,23 @@ def show_user_sidebar(user: User) -> None:
     if action_col.button("Switch user", key=f"switch_user_{user.id}", width="stretch"):
         st.session_state.clear()
         st.switch_page("app.py")
-    with get_session() as session:
-        game_session = session.get(GameSession, user.game_session_id)
-    session_text = (
-        f"{game_session.name} · {status_label(game_session.status)}"
-        if game_session is not None
-        else "Unknown session"
-    )
-    user_col.caption(f"{session_text} · {user.username} ({user.role})")
+    login_email = st.session_state.get("login_email")
+    identity = login_email or user.username
+    user_col.caption(f"Logged in as {identity} · {user.username} ({user.role})")
 
 
 def show_table(df, empty_message: str, hide_id: bool = True) -> None:
     if df.empty:
         st.caption(empty_message)
         return
+
+    display_df = df.copy()
+    if "Status" in display_df.columns:
+        display_df["Status"] = display_df["Status"].replace(STATUS_DISPLAY_LABELS)
+    if "Source" in display_df.columns:
+        display_df["Source"] = display_df["Source"].replace(SOURCE_DISPLAY_LABELS)
+    if "Refusal Reason" in display_df.columns and "Issue" not in display_df.columns:
+        display_df = display_df.rename(columns={"Refusal Reason": "Issue"})
 
     column_config = {
         "ID": None if hide_id else st.column_config.NumberColumn("ID", format="%d"),
@@ -86,7 +100,7 @@ def show_table(df, empty_message: str, hide_id: bool = True) -> None:
         "Submitted at": st.column_config.DatetimeColumn("Submitted at", format="HH:mm:ss"),
         "Updated": st.column_config.DatetimeColumn("Updated", format="HH:mm:ss"),
     }
-    st.dataframe(df, hide_index=True, width="stretch", column_config=column_config)
+    st.dataframe(display_df, hide_index=True, width="stretch", column_config=column_config)
 
 
 def auto_refresh_caption() -> None:
@@ -187,7 +201,46 @@ def inject_app_styles() -> None:
         }
         .status-pending { background: #b7791f; }
         .status-matched { background: #2f855a; }
-        .status-refused { background: #c53030; }
+        .status-rejected { background: #c53030; }
+        .session-header-name {
+            color: #2f3442;
+            font-size: 1.45rem;
+            font-weight: 750;
+            line-height: 1.2;
+            margin: 0.2rem 0 0.15rem;
+        }
+        .session-status-inline {
+            align-items: center;
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-start;
+            margin-top: 0.25rem;
+            white-space: nowrap;
+        }
+        .session-status-label {
+            color: #4b5563;
+            font-size: 0.88rem;
+            font-weight: 650;
+        }
+        .session-status-pill {
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 750;
+            line-height: 1;
+            padding: 0.32rem 0.62rem;
+        }
+        .session-status-pill-preparation {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        .session-status-pill-live {
+            background: #dcfce7;
+            color: #15803d;
+        }
+        .session-status-pill-closed {
+            background: #e5e7eb;
+            color: #374151;
+        }
         .role-strip {
             border-left: 4px solid #2f5d8c;
             padding: 0.35rem 0 0.35rem 0.85rem;
@@ -204,44 +257,47 @@ def status_chips(counts: dict[str, int]) -> None:
     for status, class_name in [
         ("Pending", "status-pending"),
         ("Matched", "status-matched"),
-        ("Refused", "status-refused"),
+        ("Rejected", "status-rejected"),
     ]:
-        chips.append(f'<span class="status-chip {class_name}">{status}: {counts.get(status, 0)}</span>')
+        label = STATUS_DISPLAY_LABELS.get(status, status)
+        chips.append(f'<span class="status-chip {class_name}">{label}: {counts.get(status, 0)}</span>')
     st.markdown(f'<div class="status-row">{"".join(chips)}</div>', unsafe_allow_html=True)
 
 
 def render_trade_status_panel(orders, user_id: int) -> None:
     """Surface declaration status changes without duplicating the full history table."""
+    state_key = f"known_trade_statuses_{user_id}"
     if orders.empty:
+        st.session_state.setdefault(state_key, {})
         st.caption("No trade declarations submitted yet.")
         return
 
     orders = infer_refusal_reasons(orders)
 
     current_statuses = {int(row["ID"]): row["Status"] for _, row in orders.iterrows()}
-    state_key = f"known_trade_statuses_{user_id}"
     previous_statuses = st.session_state.get(state_key)
     if previous_statuses is None:
         st.session_state[state_key] = current_statuses
     else:
-        notification_statuses = {"Pending", "Matched", "Refused"}
+        notification_statuses = {"Pending", "Matched", "Rejected"}
         for order_id, status in current_statuses.items():
             if status in notification_statuses and previous_statuses.get(order_id) != status:
                 matching_row = orders.loc[orders["ID"] == order_id].iloc[0]
+                declared_price = f"€ {matching_row['Price']:.1f}"
                 if status == "Pending":
                     st.toast(
-                        f"Trade pending: {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        f":blue[Trade pending:] {matching_row['Option']} with {matching_row['Counterparty']}.",
                         icon=":material/hourglass_top:",
                     )
                 elif status == "Matched":
                     st.toast(
-                        f"Trade confirmed: {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        f":green[Trade confirmed:] {matching_row['Option']} with {matching_row['Counterparty']} at {declared_price}.",
                         icon=":material/check_circle:",
                     )
                 else:
-                    reason = matching_row.get("Refusal Reason") or "Terms did not match"
+                    reason = matching_row.get("Refusal Reason") or "Entered terms did not match"
                     st.toast(
-                        f"Trade refused ({reason}): {matching_row['Option']} with {matching_row['Counterparty']}.",
+                        f":red[Declaration rejected ({reason}):] {matching_row['Option']} with {matching_row['Counterparty']} at {declared_price}.",
                         icon=":material/error:",
                     )
         st.session_state[state_key] = current_statuses
@@ -262,18 +318,18 @@ def pending_trades_df(orders):
     return pending[columns]
 
 
-def refused_transactions_df(orders):
+def rejected_transactions_df(orders):
     if orders.empty or "Status" not in orders.columns:
         return orders
 
-    refused = orders[orders["Status"] == "Refused"].copy()
-    if refused.empty:
-        return refused
+    rejected = orders[orders["Status"] == "Rejected"].copy()
+    if rejected.empty:
+        return rejected
 
-    if "Refusal Reason" in refused.columns:
-        refused["Issue"] = refused["Refusal Reason"].replace("", "Terms did not match")
+    if "Refusal Reason" in rejected.columns:
+        rejected["Issue"] = rejected["Refusal Reason"].replace("", "Entered terms did not match")
     columns = ["Status", "Issue", "Option", "Side", "Price", "Counterparty", "Created"]
-    return refused[[column for column in columns if column in refused.columns]]
+    return rejected[[column for column in columns if column in rejected.columns]]
 
 
 def matched_trades_df(trades, current_username: str):
@@ -294,23 +350,22 @@ def infer_refusal_reasons(df):
     if df.empty or "Status" not in df.columns:
         return df
 
-    refused = df[df["Status"] == "Refused"].copy()
-    if refused.empty:
+    rejected = df[df["Status"] == "Rejected"].copy()
+    if rejected.empty:
         df["Refusal Reason"] = ""
         return df
 
     reasons_by_id = {}
-    instrument_column = "Option" if "Option" in refused.columns else "Product"
-    grouped = refused.groupby(["Submitted By", "Counterparty", instrument_column], dropna=False)
+    instrument_column = "Option" if "Option" in rejected.columns else "Product"
+    grouped = rejected.groupby(["Submitted By", "Counterparty", instrument_column], dropna=False)
     reverse_lookup = {
-        (row["Counterparty"], row["Submitted By"], row[instrument_column]): row
-        for _, row in refused.iterrows()
+        (row["Counterparty"], row["Submitted By"], row[instrument_column]): row for _, row in rejected.iterrows()
     }
 
     for _, group in grouped:
         for _, row in group.iterrows():
             peer = reverse_lookup.get((row["Submitted By"], row["Counterparty"], row[instrument_column]))
-            reason = row.get("Refusal Reason") or "Terms did not match"
+            reason = row.get("Refusal Reason") or "Entered terms did not match"
             if peer is not None:
                 price_mismatch = row["Price"] != peer["Price"]
                 side_mismatch = row["Side"] == peer["Side"]

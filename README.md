@@ -21,4 +21,6 @@ PROFESSOR_EMAILS = ["professor@example.com"]
 
 Do not commit secrets. To rotate the Neon credential, create or reveal a new Neon connection string, replace `DATABASE_URL` in Streamlit secrets, and restart the app. To change professor access, replace `PROFESSOR_PASSWORD` and `PROFESSOR_EMAILS` in Streamlit secrets.
 
+For latency, create the Neon database in a US region, preferably US West/Oregon when available. Streamlit Community Cloud runs apps from the United States, and using a European Neon region adds a visible round trip on each trade declaration and database write.
+
 Local development can use SQLite fallback by omitting `DATABASE_URL`, or by running commands with `TRADING_GAME_FORCE_SQLITE=1`. Demo seeding is development-only and should not run automatically in production.

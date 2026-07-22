@@ -1,10 +1,13 @@
+from datetime import datetime, timedelta, timezone
+from html import escape
+
 import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
 from db import get_session
 from models import GameSession, MarketPrice, MarketPriceDraft, Option
-from session_manager import (
+from session_services import (
     add_participant,
     close_session,
     create_game_session,
@@ -23,11 +26,25 @@ from session_manager import (
 from state import bump_session_version
 from ui import inject_app_styles, require_login, show_user_sidebar
 
-
 st.set_page_config(page_title="Session Manager", page_icon="settings", layout="wide")
 
 inject_app_styles()
 user = require_login({"Professor"})
+
+
+def set_managed_session() -> None:
+    selected_id = st.session_state.get("managed_session_select")
+    if selected_id is not None:
+        st.session_state["managed_session_id"] = selected_id
+
+
+def toggle_state(key: str) -> None:
+    st.session_state[key] = not st.session_state.get(key, False)
+
+
+def utc_plus_2_timestamp() -> str:
+    paris_like_tz = timezone(timedelta(hours=2))
+    return datetime.now(paris_like_tz).strftime("%Y-%m-%d %H:%M:%S UTC+2")
 
 
 def ensure_market_rows(option: Option, bid_price: float = 9.0, ask_price: float = 11.0) -> None:
@@ -146,7 +163,9 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
     participants = participants_for_session(db_session, game_session.id, role)
     header, action = st.columns([4, 1], vertical_alignment="center")
     header.subheader(f"{role}s")
-    if action.button(":material/add:", key=f"add_{role}_{game_session.id}", disabled=game_session.status != "preparation"):
+    if action.button(
+        ":material/add:", key=f"add_{role}_{game_session.id}", disabled=game_session.status != "preparation"
+    ):
         add_participant(db_session, game_session.id, role)
         st.rerun()
 
@@ -201,29 +220,6 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
                         st.rerun()
 
 
-def render_professor_emails(db_session, game_session: GameSession) -> None:
-    professor = participants_for_session(db_session, game_session.id, "Professor")[0]
-    with st.container(border=True):
-        st.subheader("Professor access")
-        email_key = f"professor_emails_{professor.id}"
-        st.text_area(
-            "Authorized professor emails",
-            value=email_list_text(professor),
-            key=email_key,
-            height=90,
-            disabled=game_session.status == "closed",
-        )
-        st.caption(f"{len(parse_emails(st.session_state[email_key]))} authorized email(s)")
-        if st.button("Save professor emails", disabled=game_session.status == "closed", width="stretch"):
-            set_participant_emails(
-                db_session,
-                professor,
-                parse_emails(st.session_state[email_key]),
-            )
-            st.toast("Professor emails saved.")
-            st.rerun()
-
-
 def render_options_setup(db_session, game_session: GameSession) -> None:
     with st.container(border=True):
         st.subheader("Options")
@@ -249,9 +245,10 @@ def render_options_setup(db_session, game_session: GameSession) -> None:
             hide_index=True,
             width="stretch",
             num_rows="dynamic" if game_session.status == "preparation" else "fixed",
+            column_order=["Type", "Underlying", "Strike", "Bid", "Ask"],
             disabled=["ID"] if game_session.status == "preparation" else True,
             column_config={
-                "ID": st.column_config.NumberColumn("ID", disabled=True),
+                "ID": None,
                 "Type": st.column_config.SelectboxColumn("Type", options=["Call", "Put"], required=True),
                 "Underlying": st.column_config.TextColumn("Underlying", max_chars=30, required=True),
                 "Strike": st.column_config.NumberColumn("Strike", min_value=1, step=1, format="%d"),
@@ -270,17 +267,23 @@ def render_options_setup(db_session, game_session: GameSession) -> None:
             width="stretch",
         ):
             save_option_rows(db_session, game_session.id, rows)
+            st.session_state[f"options_saved_at_{game_session.id}"] = utc_plus_2_timestamp()
             st.toast("Options saved.")
             st.rerun()
+        saved_at = st.session_state.get(f"options_saved_at_{game_session.id}")
+        if saved_at:
+            st.caption(f"Option data last updated at {saved_at}.")
 
 
 def render_session_actions(db_session, game_session: GameSession) -> None:
     with st.container(border=True):
         st.subheader("Session actions")
-        st.badge(status_label(game_session.status))
         errors = validate_session_setup(db_session, game_session.id)
         if errors:
             st.warning(errors[0])
+        else:
+            st.success("Session setup is complete. You can start the session.", icon=":material/check_circle:")
+
         if game_session.status == "preparation":
             if st.button("Start session", type="primary", disabled=bool(errors), width="stretch"):
                 start_errors = start_session(db_session, game_session.id)
@@ -302,22 +305,31 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
         else:
             st.caption("Closed sessions are read-only.")
 
-        duplicate_name = st.text_input(
-            "Duplicate as",
-            value=f"{game_session.name} copy",
-            key=f"duplicate_name_{game_session.id}",
-        )
-        copy_emails = st.checkbox("Copy student emails", value=False, key=f"copy_student_emails_{game_session.id}")
-        if st.button("Duplicate setup", width="stretch"):
-            duplicated = duplicate_session(
-                db_session,
-                game_session.id,
-                duplicate_name,
-                copy_student_emails=copy_emails,
-                copy_professor_emails=True,
+        duplicate_key = f"duplicate_session_open_{game_session.id}"
+        if st.button("Duplicate session", key=f"toggle_duplicate_{game_session.id}", width="stretch"):
+            toggle_state(duplicate_key)
+        if st.session_state.get(duplicate_key, False):
+            duplicate_name = st.text_input(
+                "Duplicate as",
+                value=f"{game_session.name} copy",
+                key=f"duplicate_name_{game_session.id}",
             )
-            st.session_state["managed_session_id"] = duplicated.id
-            st.rerun()
+            copy_emails = st.checkbox(
+                "Copy student emails",
+                value=False,
+                key=f"copy_student_emails_{game_session.id}",
+            )
+            if st.button("Create duplicate", type="primary", width="stretch"):
+                duplicated = duplicate_session(
+                    db_session,
+                    game_session.id,
+                    duplicate_name,
+                    copy_student_emails=copy_emails,
+                    copy_professor_emails=True,
+                )
+                st.session_state["managed_session_id"] = duplicated.id
+                st.session_state["managed_session_select"] = duplicated.id
+                st.rerun()
 
 
 st.title("Session Manager")
@@ -338,42 +350,82 @@ with get_session() as db_session:
         st.info("Create the first session to configure the game.")
         st.stop()
 
+    session_ids = [session.id for session in sessions]
+    labels_by_id = {session.id: f"{session.name} - {status_label(session.status)}" for session in sessions}
     selected_session_id = st.session_state.get("managed_session_id") or sessions[0].id
+    if selected_session_id not in session_ids:
+        selected_session_id = sessions[0].id
+        st.session_state["managed_session_id"] = selected_session_id
+    st.session_state["managed_session_select"] = selected_session_id
+
     selected_session = db_session.get(GameSession, selected_session_id)
     if selected_session is None:
         selected_session = sessions[0]
 
-    selector = st.selectbox(
-        "Session",
-        sessions,
-        index=sessions.index(selected_session),
-        format_func=lambda item: f"{item.name} - {status_label(item.status)}",
-    )
-    st.session_state["managed_session_id"] = selector.id
-    selected_session = db_session.get(GameSession, selector.id)
+    with st.container(border=True):
+        st.subheader("Session setting")
+        selector_id = st.selectbox(
+            "Select session",
+            session_ids,
+            index=session_ids.index(selected_session_id),
+            format_func=lambda item_id: labels_by_id[item_id],
+            key="managed_session_select",
+            on_change=set_managed_session,
+        )
+        selected_session = db_session.get(GameSession, selector_id)
 
-    header_left, header_right = st.columns([3, 1], vertical_alignment="center")
-    if selected_session.status == "preparation":
-        new_session_name = header_left.text_input("Selected session name", value=selected_session.name)
-        if new_session_name.strip() != selected_session.name:
-            selected_session.name = new_session_name.strip()
-            bump_session_version(db_session, selected_session.id)
-    else:
-        header_left.subheader(selected_session.name)
-    header_right.badge(status_label(selected_session.status))
+        header_name, header_status = st.columns([3.2, 1.45], vertical_alignment="center")
+        header_name.markdown(
+            f'<div class="session-header-name">{escape(selected_session.name)}</div>',
+            unsafe_allow_html=True,
+        )
+        header_status.markdown(
+            (
+                '<div class="session-status-inline">'
+                '<span class="session-status-label">Session status:</span>'
+                f'<span class="session-status-pill session-status-pill-{selected_session.status}">'
+                f"{status_label(selected_session.status)}</span>"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
-    top_left, top_right = st.columns([2, 1], gap="large")
-    with top_left:
-        company_tab, bank_tab, option_tab = st.tabs(["Companies", "Banks", "Options"])
-        with company_tab:
-            render_participant_cards(db_session, selected_session, "Company")
-        with bank_tab:
-            render_participant_cards(db_session, selected_session, "Bank")
-        with option_tab:
-            render_options_setup(db_session, selected_session)
-    with top_right:
-        render_professor_emails(db_session, selected_session)
-        render_session_actions(db_session, selected_session)
+        rename_key = f"rename_session_open_{selected_session.id}"
+
+        if st.button(
+            "Rename",
+            icon=":material/edit:",
+            key=f"toggle_rename_{selected_session.id}",
+            disabled=selected_session.status != "preparation",
+        ):
+            toggle_state(rename_key)
+        if st.session_state.get(rename_key, False):
+            new_session_name = st.text_input(
+                "New session name",
+                value=selected_session.name,
+                key=f"rename_session_name_{selected_session.id}",
+            )
+            if st.button("Save session name", type="primary", key=f"save_session_name_{selected_session.id}"):
+                cleaned_name = new_session_name.strip()
+                if cleaned_name and cleaned_name != selected_session.name:
+                    selected_session.name = cleaned_name
+                    bump_session_version(db_session, selected_session.id)
+                st.session_state[rename_key] = False
+                st.toast("Session renamed.")
+                st.rerun()
+
+        top_left, top_right = st.columns([2, 1], gap="small")
+        with top_left:
+            with st.container(border=True):
+                company_tab, bank_tab, option_tab = st.tabs(["Companies", "Banks", "Options"])
+                with company_tab:
+                    render_participant_cards(db_session, selected_session, "Company")
+                with bank_tab:
+                    render_participant_cards(db_session, selected_session, "Bank")
+                with option_tab:
+                    render_options_setup(db_session, selected_session)
+        with top_right:
+            render_session_actions(db_session, selected_session)
 
     if selected_session.status in {"live", "closed"}:
         if st.button("Open control room", type="primary", width="stretch"):
