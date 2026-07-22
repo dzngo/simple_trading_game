@@ -113,7 +113,9 @@ For latency, create the Neon database in a US region, preferably US West/Oregon 
 
 - `Preparation`: professor configures participants, emails, options, and market prices. Students cannot trade.
 - `Live`: students can trade. Professor can monitor trades and adjust market bid/ask prices.
-- `Closed`: session is read-only. Professor can review, export, and duplicate setup into a new Preparation session.
+- `Closed`: session is read-only. Professor can review, export, duplicate setup into a new Preparation session, or delete the closed session.
+
+Deleting a session is available only for `Preparation` and `Closed` sessions. `Live` sessions must be closed before they can be deleted.
 
 ## Demo Users
 

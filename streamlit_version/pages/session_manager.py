@@ -11,7 +11,7 @@ from session_services import (
     add_participant,
     close_session,
     create_game_session,
-    delete_preparation_session,
+    delete_session,
     duplicate_session,
     email_list_text,
     parse_emails,
@@ -314,7 +314,7 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
         errors = validate_session_setup(db_session, game_session.id)
         if errors:
             st.warning(errors[0])
-        else:
+        elif game_session.status == "preparation":
             st.success("Session setup is complete. You can start the session.", icon=":material/check_circle:")
 
         if game_session.status == "preparation":
@@ -326,12 +326,6 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
                 else:
                     st.success("Session is live.")
                     st.rerun()
-            confirm_delete = st.checkbox("Confirm delete draft", key=f"confirm_delete_{game_session.id}")
-            if st.button("Delete preparation session", disabled=not confirm_delete, width="stretch"):
-                with st.spinner("Deleting preparation session..."):
-                    delete_preparation_session(db_session, game_session.id)
-                    st.session_state.pop("managed_session_id", None)
-                st.rerun()
         elif game_session.status == "live":
             confirm_close = st.checkbox("Confirm close session", key=f"confirm_close_{game_session.id}")
             if st.button("Close session", type="primary", disabled=not confirm_close, width="stretch"):
@@ -340,6 +334,16 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
                 st.rerun()
         else:
             st.caption("Closed sessions are read-only.")
+
+        if game_session.status in {"preparation", "closed"}:
+            st.caption("Delete removes this session and all related participants, options, orders, and trades.")
+            confirm_delete = st.checkbox("Confirm delete session", key=f"confirm_delete_{game_session.id}")
+            if st.button("Delete session", disabled=not confirm_delete, width="stretch"):
+                with st.spinner("Deleting session..."):
+                    delete_session(db_session, game_session.id)
+                    st.session_state.pop("managed_session_id", None)
+                    st.session_state.pop("managed_session_select", None)
+                st.rerun()
 
         duplicate_key = f"duplicate_session_open_{game_session.id}"
         if st.button("Duplicate session", key=f"toggle_duplicate_{game_session.id}", width="stretch"):

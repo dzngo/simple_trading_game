@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 import re
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from models import (
@@ -239,14 +239,20 @@ def close_session(session: Session, game_session_id: int) -> None:
     bump_session_version(session, game_session_id)
 
 
-def delete_preparation_session(session: Session, game_session_id: int) -> None:
+def delete_session(session: Session, game_session_id: int) -> None:
     game_session = session.get(GameSession, game_session_id)
     if game_session is None:
         return
-    if game_session.status != "preparation":
-        raise ValueError("Only Preparation sessions can be deleted.")
+    if game_session.status == "live":
+        raise ValueError("Live sessions cannot be deleted. Close the session first.")
+    session.execute(delete(Trade).where(Trade.game_session_id == game_session_id))
+    session.execute(delete(Order).where(Order.game_session_id == game_session_id))
     session.delete(game_session)
     session.flush()
+
+
+def delete_preparation_session(session: Session, game_session_id: int) -> None:
+    delete_session(session, game_session_id)
 
 
 def duplicate_session(
