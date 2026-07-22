@@ -211,12 +211,11 @@ def apply_catalog_update(session, rows: list[dict], target_count: int) -> None:
     bump_session_version(session, GAME_SESSION_ID)
 
 
-def publish_market_prices() -> tuple[bool, str]:
+def publish_market_prices(rows: list[dict]) -> tuple[bool, str]:
     with get_session() as session:
         game_session = session.get(GameSession, GAME_SESSION_ID)
         if game_session is None or game_session.status != "live":
             return False, "Market prices can only be adjusted while the session is Live."
-        rows = option_setup_rows(session).to_dict("records")
         errors = validate_setup_rows(rows, definitions_locked=True)
         if errors:
             return False, errors[0]
@@ -226,8 +225,28 @@ def publish_market_prices() -> tuple[bool, str]:
             ensure_market_rows(session, option)
             option.market_price.bid_price = normalize_price(row["Draft Bid"])
             option.market_price.ask_price = normalize_price(row["Draft Ask"])
+            option.market_price_draft.draft_bid_price = normalize_price(row["Draft Bid"])
+            option.market_price_draft.draft_ask_price = normalize_price(row["Draft Ask"])
         bump_session_version(session, GAME_SESSION_ID)
-    return True, "Market prices adjusted."
+    return True, "Market prices are up to date"
+
+
+def market_price_state_keys() -> tuple[str, str, str]:
+    prefix = f"prof_market_prices_{GAME_SESSION_ID}"
+    return f"{prefix}_source_rows", f"{prefix}_last_status", f"{prefix}_editor_nonce"
+
+
+def load_market_price_source_rows(force: bool = False) -> list[dict]:
+    source_key, _, editor_nonce_key = market_price_state_keys()
+    if force or source_key not in st.session_state:
+        with get_session() as session:
+            st.session_state[source_key] = option_setup_rows(session).to_dict("records")
+        st.session_state.setdefault(editor_nonce_key, 0)
+    return st.session_state[source_key]
+
+
+def market_price_df_from_rows(rows: list[dict]) -> pd.DataFrame:
+    return pd.DataFrame([row.copy() for row in rows])
 
 
 def refusal_reason_for_pair(first, second) -> str:
@@ -399,17 +418,16 @@ def render_professor_analytics() -> None:
     show_table(pnl, "No participants found.")
 
 
-def render_option_setup() -> None:
+@st.fragment
+def render_option_setup(game_session_status: str | None) -> None:
     with st.container(border=True):
         st.subheader("Market prices")
         st.caption("Modify the bid and ask values shown to banks during the live session.")
+        prices_locked = game_session_status != "live"
 
-        with get_session() as session:
-            game_session = session.get(GameSession, GAME_SESSION_ID)
-            prices_locked = game_session.status != "live" if game_session is not None else True
-
-        with get_session() as session:
-            setup_df = option_setup_rows(session)
+        source_key, status_key, editor_nonce_key = market_price_state_keys()
+        source_rows = load_market_price_source_rows()
+        setup_df = market_price_df_from_rows(source_rows)
 
         disabled_columns = ["ID", "Type", "Underlying", "Strike", "Current Bid", "Current Ask"]
         if prices_locked:
@@ -417,7 +435,7 @@ def render_option_setup() -> None:
 
         edited_df = st.data_editor(
             setup_df,
-            key="prof_option_setup_editor",
+            key=f"prof_option_setup_editor_{GAME_SESSION_ID}_{st.session_state.get(editor_nonce_key, 0)}",
             hide_index=True,
             width="stretch",
             column_order=["Type", "Underlying", "Strike", "Current Bid", "Current Ask", "Draft Bid", "Draft Ask"],
@@ -438,11 +456,16 @@ def render_option_setup() -> None:
         rows = edited_df.to_dict("records")
         errors = validate_setup_rows(rows, definitions_locked=True)
         pending_changes = staged_market_change_count(rows) if not errors else 0
+        last_status = st.session_state.pop(status_key, None)
+        if last_status is not None:
+            status_type, status_message = last_status
+            if status_type == "success":
+                st.success(status_message, icon=":material/check_circle:")
+            else:
+                st.error(status_message, icon=":material/error:")
+
         if errors:
             st.error(errors[0], icon=":material/error:")
-        elif not prices_locked:
-            with get_session() as session:
-                apply_setup_rows(session, rows, definitions_locked=True)
 
         if errors:
             st.caption("Fix the highlighted setup problem before updating market prices.")
@@ -455,20 +478,31 @@ def render_option_setup() -> None:
                 disabled=prices_locked,
                 width="stretch",
             ):
-                success, message = publish_market_prices()
+                with st.spinner("Adjusting market prices..."):
+                    success, message = publish_market_prices(rows)
                 if success:
-                    st.success(message, icon=":material/check_circle:")
-                    st.rerun()
+                    st.session_state[source_key] = [
+                        {
+                            **row,
+                            "Current Bid": normalize_price(row["Draft Bid"]),
+                            "Current Ask": normalize_price(row["Draft Ask"]),
+                            "Draft Bid": normalize_price(row["Draft Bid"]),
+                            "Draft Ask": normalize_price(row["Draft Ask"]),
+                        }
+                        for row in rows
+                    ]
+                    st.session_state[editor_nonce_key] = st.session_state.get(editor_nonce_key, 0) + 1
+                    st.session_state[status_key] = ("success", message)
+                    st.rerun(scope="fragment")
                 else:
-                    st.error(message, icon=":material/error:")
+                    st.session_state[status_key] = ("error", message)
+                    st.rerun(scope="fragment")
             status_col.warning(
                 f"{pending_changes} option price row(s) staged. Banks still see the current bid/ask.",
                 icon=":material/pending:",
             )
         elif prices_locked:
             st.caption("Market prices are read-only because the session is closed.")
-        else:
-            st.caption(":green[:material/check_circle: Current prices are up to date.]")
 
 
 def render_group_payoff_summary() -> None:
@@ -536,8 +570,9 @@ def render_group_payoff_summary() -> None:
         st.plotly_chart(fig, width="stretch")
 
 
-def render_exports(selected_session: GameSession | None) -> None:
-    if selected_session is None:
+@st.fragment
+def render_exports(selected_session_name: str | None) -> None:
+    if selected_session_name is None:
         return
     with st.container(border=True):
         st.subheader("Exports")
@@ -553,8 +588,9 @@ def render_exports(selected_session: GameSession | None) -> None:
             key=f"prepare_excel_export_{GAME_SESSION_ID}",
         ):
             try:
-                with get_session() as session:
-                    st.session_state[workbook_key] = export_workbook_bytes(session, GAME_SESSION_ID)
+                with st.spinner("Preparing Excel workbook..."):
+                    with get_session() as session:
+                        st.session_state[workbook_key] = export_workbook_bytes(session, GAME_SESSION_ID)
             except Exception as exc:
                 st.session_state.pop(workbook_key, None)
                 export_cols[0].error(f"Workbook export unavailable: {exc}")
@@ -564,7 +600,7 @@ def render_exports(selected_session: GameSession | None) -> None:
             export_cols[0].download_button(
                 "Download Excel workbook",
                 data=workbook,
-                file_name=f"{safe_filename(selected_session.name)}_trading_game.xlsx",
+                file_name=f"{safe_filename(selected_session_name)}_trading_game.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
             )
@@ -576,8 +612,9 @@ def render_exports(selected_session: GameSession | None) -> None:
             key=f"prepare_graph_export_{GAME_SESSION_ID}",
         ):
             try:
-                with get_session() as session:
-                    st.session_state[graph_zip_key] = payoff_graph_zip_bytes(session, GAME_SESSION_ID)
+                with st.spinner("Preparing payoff graphs..."):
+                    with get_session() as session:
+                        st.session_state[graph_zip_key] = payoff_graph_zip_bytes(session, GAME_SESSION_ID)
             except Exception as exc:
                 st.session_state.pop(graph_zip_key, None)
                 export_cols[1].error(f"Payoff graph export unavailable: {exc}")
@@ -588,7 +625,7 @@ def render_exports(selected_session: GameSession | None) -> None:
                 export_cols[1].download_button(
                     "Download payoff graphs",
                     data=graph_zip,
-                    file_name=f"{safe_filename(selected_session.name)}_payoff_graphs.zip",
+                    file_name=f"{safe_filename(selected_session_name)}_payoff_graphs.zip",
                     mime="application/zip",
                     width="stretch",
                 )
@@ -612,7 +649,7 @@ if st.button("Back to Session Manager", width="content"):
 
 top_left, top_right = st.columns(2)
 with top_left:
-    render_option_setup()
+    render_option_setup(selected_session.status if selected_session is not None else None)
 with top_right:
     render_trade_history()
 
@@ -620,5 +657,5 @@ with st.container(border=True):
     st.subheader("Group payoff")
     render_group_payoff_summary()
 
-render_exports(selected_session)
+render_exports(selected_session.name if selected_session is not None else None)
 render_professor_analytics()

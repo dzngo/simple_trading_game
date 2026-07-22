@@ -159,6 +159,34 @@ def save_option_rows(session, game_session_id: int, rows: list[dict]) -> None:
     bump_session_version(session, game_session_id)
 
 
+def option_setup_state_keys(game_session_id: int) -> tuple[str, str, str]:
+    prefix = f"session_options_setup_{game_session_id}"
+    return f"{prefix}_source_rows", f"{prefix}_last_status", f"{prefix}_editor_nonce"
+
+
+def load_option_setup_source_rows(game_session_id: int, force: bool = False) -> list[dict]:
+    source_key, _, editor_nonce_key = option_setup_state_keys(game_session_id)
+    if force or source_key not in st.session_state:
+        with get_session() as session:
+            setup_df = option_rows(session, game_session_id)
+        if setup_df.empty:
+            setup_df = pd.DataFrame(
+                [
+                    {
+                        "ID": pd.NA,
+                        "Type": "Call",
+                        "Underlying": "Asset 1",
+                        "Strike": 100,
+                        "Bid": 9.0,
+                        "Ask": 11.0,
+                    }
+                ]
+            )
+        st.session_state[source_key] = setup_df.to_dict("records")
+        st.session_state.setdefault(editor_nonce_key, 0)
+    return st.session_state[source_key]
+
+
 def render_participant_cards(db_session, game_session: GameSession, role: str) -> None:
     participants = participants_for_session(db_session, game_session.id, role)
     header, action = st.columns([4, 1], vertical_alignment="center")
@@ -166,7 +194,8 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
     if action.button(
         ":material/add:", key=f"add_{role}_{game_session.id}", disabled=game_session.status != "preparation"
     ):
-        add_participant(db_session, game_session.id, role)
+        with st.spinner(f"Adding {role.lower()}..."):
+            add_participant(db_session, game_session.id, role)
         st.rerun()
 
     if not participants:
@@ -202,12 +231,13 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
                         disabled=game_session.status == "closed",
                         width="stretch",
                     ):
-                        new_name = st.session_state[name_key].strip()
-                        name_changed = new_name != participant.username
-                        participant.username = new_name
-                        set_participant_emails(db_session, participant, parsed)
-                        if name_changed:
-                            bump_session_version(db_session, participant.game_session_id)
+                        with st.spinner("Saving participant..."):
+                            new_name = st.session_state[name_key].strip()
+                            name_changed = new_name != participant.username
+                            participant.username = new_name
+                            set_participant_emails(db_session, participant, parsed)
+                            if name_changed:
+                                bump_session_version(db_session, participant.game_session_id)
                         st.toast("Participant saved.")
                         st.rerun()
                     if controls[1].button(
@@ -216,37 +246,28 @@ def render_participant_cards(db_session, game_session: GameSession, role: str) -
                         disabled=game_session.status != "preparation",
                         width="stretch",
                     ):
-                        remove_participant(db_session, participant.id)
+                        with st.spinner("Removing participant..."):
+                            remove_participant(db_session, participant.id)
                         st.rerun()
 
 
-def render_options_setup(db_session, game_session: GameSession) -> None:
+@st.fragment
+def render_options_setup(game_session_id: int, game_session_status: str) -> None:
     with st.container(border=True):
         st.subheader("Options")
-        if game_session.status != "preparation":
+        if game_session_status != "preparation":
             st.caption("Option definitions are locked after the session starts.")
-        setup_df = option_rows(db_session, game_session.id)
-        if setup_df.empty:
-            setup_df = pd.DataFrame(
-                [
-                    {
-                        "ID": pd.NA,
-                        "Type": "Call",
-                        "Underlying": "Asset 1",
-                        "Strike": 100,
-                        "Bid": 9.0,
-                        "Ask": 11.0,
-                    }
-                ]
-            )
+        source_key, status_key, editor_nonce_key = option_setup_state_keys(game_session_id)
+        source_rows = load_option_setup_source_rows(game_session_id)
+        setup_df = pd.DataFrame([row.copy() for row in source_rows])
         edited = st.data_editor(
             setup_df,
-            key=f"session_options_{game_session.id}",
+            key=f"session_options_{game_session_id}_{st.session_state.get(editor_nonce_key, 0)}",
             hide_index=True,
             width="stretch",
-            num_rows="dynamic" if game_session.status == "preparation" else "fixed",
+            num_rows="dynamic" if game_session_status == "preparation" else "fixed",
             column_order=["Type", "Underlying", "Strike", "Bid", "Ask"],
-            disabled=["ID"] if game_session.status == "preparation" else True,
+            disabled=["ID"] if game_session_status == "preparation" else True,
             column_config={
                 "ID": None,
                 "Type": st.column_config.SelectboxColumn("Type", options=["Call", "Put"], required=True),
@@ -258,19 +279,31 @@ def render_options_setup(db_session, game_session: GameSession) -> None:
         )
         rows = edited.to_dict("records")
         errors = validate_option_rows(rows)
+        last_status = st.session_state.pop(status_key, None)
+        if last_status is not None:
+            status_type, status_message = last_status
+            if status_type == "success":
+                st.success(status_message, icon=":material/check_circle:")
+            else:
+                st.error(status_message, icon=":material/error:")
         if errors:
             st.error(errors[0])
         if st.button(
             "Save options",
             type="primary",
-            disabled=bool(errors) or game_session.status != "preparation",
+            disabled=bool(errors) or game_session_status != "preparation",
             width="stretch",
         ):
-            save_option_rows(db_session, game_session.id, rows)
-            st.session_state[f"options_saved_at_{game_session.id}"] = utc_plus_2_timestamp()
+            with st.spinner("Saving options..."):
+                with get_session() as session:
+                    save_option_rows(session, game_session_id, rows)
+                st.session_state[f"options_saved_at_{game_session_id}"] = utc_plus_2_timestamp()
+                st.session_state[source_key] = load_option_setup_source_rows(game_session_id, force=True)
+                st.session_state[editor_nonce_key] = st.session_state.get(editor_nonce_key, 0) + 1
+                st.session_state[status_key] = ("success", "Options saved.")
             st.toast("Options saved.")
-            st.rerun()
-        saved_at = st.session_state.get(f"options_saved_at_{game_session.id}")
+            st.rerun(scope="fragment")
+        saved_at = st.session_state.get(f"options_saved_at_{game_session_id}")
         if saved_at:
             st.caption(f"Option data last updated at {saved_at}.")
 
@@ -286,7 +319,8 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
 
         if game_session.status == "preparation":
             if st.button("Start session", type="primary", disabled=bool(errors), width="stretch"):
-                start_errors = start_session(db_session, game_session.id)
+                with st.spinner("Starting session..."):
+                    start_errors = start_session(db_session, game_session.id)
                 if start_errors:
                     st.error(start_errors[0])
                 else:
@@ -294,13 +328,15 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
                     st.rerun()
             confirm_delete = st.checkbox("Confirm delete draft", key=f"confirm_delete_{game_session.id}")
             if st.button("Delete preparation session", disabled=not confirm_delete, width="stretch"):
-                delete_preparation_session(db_session, game_session.id)
-                st.session_state.pop("managed_session_id", None)
+                with st.spinner("Deleting preparation session..."):
+                    delete_preparation_session(db_session, game_session.id)
+                    st.session_state.pop("managed_session_id", None)
                 st.rerun()
         elif game_session.status == "live":
             confirm_close = st.checkbox("Confirm close session", key=f"confirm_close_{game_session.id}")
             if st.button("Close session", type="primary", disabled=not confirm_close, width="stretch"):
-                close_session(db_session, game_session.id)
+                with st.spinner("Closing session..."):
+                    close_session(db_session, game_session.id)
                 st.rerun()
         else:
             st.caption("Closed sessions are read-only.")
@@ -320,15 +356,16 @@ def render_session_actions(db_session, game_session: GameSession) -> None:
                 key=f"copy_student_emails_{game_session.id}",
             )
             if st.button("Create duplicate", type="primary", width="stretch"):
-                duplicated = duplicate_session(
-                    db_session,
-                    game_session.id,
-                    duplicate_name,
-                    copy_student_emails=copy_emails,
-                    copy_professor_emails=True,
-                )
-                st.session_state["managed_session_id"] = duplicated.id
-                st.session_state["managed_session_select"] = duplicated.id
+                with st.spinner("Duplicating session..."):
+                    duplicated = duplicate_session(
+                        db_session,
+                        game_session.id,
+                        duplicate_name,
+                        copy_student_emails=copy_emails,
+                        copy_professor_emails=True,
+                    )
+                    st.session_state["managed_session_id"] = duplicated.id
+                    st.session_state["managed_session_select"] = duplicated.id
                 st.rerun()
 
 
@@ -342,8 +379,9 @@ with get_session() as db_session:
         st.subheader("Create session")
         new_name = st.text_input("Session name", value="New Session")
         if st.button("Create session", type="primary"):
-            created = create_game_session(db_session, new_name)
-            st.session_state["managed_session_id"] = created.id
+            with st.spinner("Creating session..."):
+                created = create_game_session(db_session, new_name)
+                st.session_state["managed_session_id"] = created.id
             st.rerun()
 
     if not sessions:
@@ -406,11 +444,12 @@ with get_session() as db_session:
                 key=f"rename_session_name_{selected_session.id}",
             )
             if st.button("Save session name", type="primary", key=f"save_session_name_{selected_session.id}"):
-                cleaned_name = new_session_name.strip()
-                if cleaned_name and cleaned_name != selected_session.name:
-                    selected_session.name = cleaned_name
-                    bump_session_version(db_session, selected_session.id)
-                st.session_state[rename_key] = False
+                with st.spinner("Renaming session..."):
+                    cleaned_name = new_session_name.strip()
+                    if cleaned_name and cleaned_name != selected_session.name:
+                        selected_session.name = cleaned_name
+                        bump_session_version(db_session, selected_session.id)
+                    st.session_state[rename_key] = False
                 st.toast("Session renamed.")
                 st.rerun()
 
@@ -423,7 +462,7 @@ with get_session() as db_session:
                 with bank_tab:
                     render_participant_cards(db_session, selected_session, "Bank")
                 with option_tab:
-                    render_options_setup(db_session, selected_session)
+                    render_options_setup(selected_session.id, selected_session.status)
         with top_right:
             render_session_actions(db_session, selected_session)
 

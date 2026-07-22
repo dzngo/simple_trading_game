@@ -112,17 +112,18 @@ def render_student_login() -> None:
             st.error("Enter a valid authorized email.")
             return
         target_participant = None
-        with get_session() as session:
-            matches = live_sessions_for_email(session, normalized)
-            if not matches:
-                st.error("No live session is available for this email.")
-                return
-            if len(matches) == 1:
-                _, target_participant = matches[0]
-            else:
-                st.session_state["student_login_matches"] = [participant.id for _, participant in matches]
-                st.session_state["student_login_email"] = normalized
-                st.rerun()
+        with st.spinner("Finding your session..."):
+            with get_session() as session:
+                matches = live_sessions_for_email(session, normalized)
+                if not matches:
+                    st.error("No live session is available for this email.")
+                    return
+                if len(matches) == 1:
+                    _, target_participant = matches[0]
+                else:
+                    st.session_state["student_login_matches"] = [participant.id for _, participant in matches]
+                    st.session_state["student_login_email"] = normalized
+                    st.rerun()
         if target_participant is not None:
             sign_in(target_participant, login_email=normalized)
 
@@ -150,7 +151,8 @@ def render_student_session_choice() -> None:
         format_func=lambda item: labels[item.id],
     )
     if st.button("Continue", type="primary", width="stretch"):
-        sign_in(selected, login_email=st.session_state.get("student_login_email"))
+        with st.spinner("Opening session..."):
+            sign_in(selected, login_email=st.session_state.get("student_login_email"))
 
 
 def render_professor_login() -> None:
@@ -176,8 +178,9 @@ def render_professor_login() -> None:
             return
 
         target_professor = None
-        with get_session() as session:
-            target_professor = professor_for_bootstrap_email(session, normalized)
+        with st.spinner("Opening professor tools..."):
+            with get_session() as session:
+                target_professor = professor_for_bootstrap_email(session, normalized)
 
         if target_professor is not None:
             sign_in(target_professor, professor_authenticated=True, login_email=normalized)

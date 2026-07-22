@@ -63,22 +63,14 @@ def render_bank_live_panel(user_id: int) -> None:
         show_table(snapshot["rejected"], "No rejected declarations.")
 
 
-st.title("Bank desk")
-st.markdown(
-    '<div class="role-strip">Confirm verbal trades with companies, or trade directly with the professor-set market.</div>',
-    unsafe_allow_html=True,
-)
-show_user_sidebar(user)
-
-with get_session() as session:
-    option_options = active_options(session, GAME_SESSION_ID)
-    company_options = users_by_role(session, "Company", GAME_SESSION_ID)
-
-left, right = st.columns([1, 1.35], gap="large")
-
-with left:
+@st.fragment
+def render_bank_declaration_panel(user_id: int) -> None:
     with st.container(border=True):
         st.subheader("Client trade declaration")
+
+        with get_session() as session:
+            option_options = active_options(session, GAME_SESSION_ID)
+            company_options = users_by_role(session, "Company", GAME_SESSION_ID)
 
         if not option_options or not company_options:
             st.info("The professor must configure active options and companies before declarations can be submitted.")
@@ -103,24 +95,31 @@ with left:
 
             if submitted:
                 submitted_price = float(st.session_state["bank_agreed_price"])
-                with get_session() as session:
-                    create_trade_declaration(
-                        session=session,
-                        game_session_id=GAME_SESSION_ID,
-                        user_id=user.id,
-                        counterparty_id=counterparty.id,
-                        option_id=option.id,
-                        side=side,
-                        price=submitted_price,
-                    )
-                st.rerun()
+                with st.spinner("Submitting declaration..."):
+                    with get_session() as session:
+                        create_trade_declaration(
+                            session=session,
+                            game_session_id=GAME_SESSION_ID,
+                            user_id=user_id,
+                            counterparty_id=counterparty.id,
+                            option_id=option.id,
+                            side=side,
+                            price=submitted_price,
+                        )
+                st.rerun(scope="fragment")
 
+
+@st.fragment
+def render_bank_market_trade_panel(user_id: int) -> None:
     with st.container(border=True):
         st.subheader("Market trade")
         st.caption("Market trades execute immediately at the current professor-set bid/ask.")
         market_confirmation = st.session_state.pop("market_trade_confirmation", None)
         if market_confirmation is not None:
             st.success(market_confirmation, icon=":material/check_circle:")
+
+        with get_session() as session:
+            option_options = active_options(session, GAME_SESSION_ID)
 
         if not option_options:
             st.info("No active options configured.")
@@ -131,22 +130,37 @@ with left:
             execution_price = market_ask if market_side == "Buy" else market_bid
             st.metric("Execution Price", f"{execution_price:.1f}")
             if st.button("Execute market trade", type="primary", width="stretch"):
-                with get_session() as session:
-                    trade = create_market_trade(
-                        session=session,
-                        game_session_id=GAME_SESSION_ID,
-                        bank_id=user.id,
-                        option_id=market_option.id,
-                        side=market_side,
-                    )
-                    st.session_state["market_trade_confirmation"] = format_market_trade_confirmation(
-                        trade.id,
-                        option_label(trade.option),
-                        market_side,
-                        trade.price,
-                        trade.created_at,
-                    )
-                st.rerun()
+                with st.spinner("Executing market trade..."):
+                    with get_session() as session:
+                        trade = create_market_trade(
+                            session=session,
+                            game_session_id=GAME_SESSION_ID,
+                            bank_id=user_id,
+                            option_id=market_option.id,
+                            side=market_side,
+                        )
+                        st.session_state["market_trade_confirmation"] = format_market_trade_confirmation(
+                            trade.id,
+                            option_label(trade.option),
+                            market_side,
+                            trade.price,
+                            trade.created_at,
+                        )
+                st.rerun(scope="fragment")
+
+
+st.title("Bank desk")
+st.markdown(
+    '<div class="role-strip">Confirm verbal trades with companies, or trade directly with the professor-set market.</div>',
+    unsafe_allow_html=True,
+)
+show_user_sidebar(user)
+
+left, right = st.columns([1, 1.35], gap="large")
+
+with left:
+    render_bank_declaration_panel(user.id)
+    render_bank_market_trade_panel(user.id)
 
 with right:
     render_bank_live_panel(user.id)
