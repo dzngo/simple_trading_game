@@ -81,23 +81,6 @@ def market_prices_df(session: Session, game_session_id: int, include_drafts: boo
     return pd.DataFrame(rows)
 
 
-def market_price_for_option(
-    session: Session,
-    option_id: int,
-    game_session_id: int,
-    default_bid: float = 9.0,
-    default_ask: float = 11.0,
-) -> tuple[float, float]:
-    price = session.scalar(
-        select(MarketPrice)
-        .join(Option)
-        .where(MarketPrice.option_id == option_id, Option.game_session_id == game_session_id)
-    )
-    if price is None:
-        return default_bid, default_ask
-    return float(price.bid_price), float(price.ask_price)
-
-
 def orders_df(
     session: Session,
     game_session_id: int,

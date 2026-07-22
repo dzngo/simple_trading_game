@@ -2,7 +2,6 @@ import streamlit as st
 
 from analytics import (
     active_options,
-    market_price_for_option,
     option_label,
     users_by_role,
 )
@@ -27,9 +26,17 @@ user = require_login({"Bank"}, allowed_statuses={"live"})
 GAME_SESSION_ID = int(st.session_state["game_session_id"])
 
 
-def get_market_prices(option_id: int) -> tuple[float, float]:
+def load_market_trade_options() -> list[dict]:
     with get_session() as session:
-        return market_price_for_option(session, option_id, GAME_SESSION_ID)
+        return [
+            {
+                "id": option.id,
+                "label": option_label(option),
+                "bid": float(option.market_price.bid_price) if option.market_price else 9.0,
+                "ask": float(option.market_price.ask_price) if option.market_price else 11.0,
+            }
+            for option in active_options(session, GAME_SESSION_ID)
+        ]
 
 
 def format_market_trade_confirmation(trade_id: int, option_text: str, side: str, price: float, created_at) -> str:
@@ -118,16 +125,24 @@ def render_bank_market_trade_panel(user_id: int) -> None:
         if market_confirmation is not None:
             st.success(market_confirmation, icon=":material/check_circle:")
 
-        with get_session() as session:
-            option_options = active_options(session, GAME_SESSION_ID)
+        options_key = f"bank_market_trade_options_{GAME_SESSION_ID}"
+        st.session_state[options_key] = load_market_trade_options()
+        option_options = st.session_state[options_key]
 
         if not option_options:
             st.info("No active options configured.")
         else:
-            market_option = st.selectbox("Market option", option_options, format_func=option_label, key="market_option")
+            market_option_id = st.selectbox(
+                "Market option",
+                [option["id"] for option in option_options],
+                format_func=lambda option_id: next(
+                    option["label"] for option in option_options if option["id"] == option_id
+                ),
+                key="market_option",
+            )
             market_side = st.segmented_control("Market side", ["Buy", "Sell"], default="Buy", key="market_side")
-            market_bid, market_ask = get_market_prices(market_option.id)
-            execution_price = market_ask if market_side == "Buy" else market_bid
+            market_option = next(option for option in option_options if option["id"] == market_option_id)
+            execution_price = market_option["ask"] if market_side == "Buy" else market_option["bid"]
             st.metric("Execution Price", f"{execution_price:.1f}")
             if st.button("Execute market trade", type="primary", width="stretch"):
                 with st.spinner("Executing market trade..."):
@@ -136,7 +151,7 @@ def render_bank_market_trade_panel(user_id: int) -> None:
                             session=session,
                             game_session_id=GAME_SESSION_ID,
                             bank_id=user_id,
-                            option_id=market_option.id,
+                            option_id=market_option_id,
                             side=market_side,
                         )
                         st.session_state["market_trade_confirmation"] = format_market_trade_confirmation(
